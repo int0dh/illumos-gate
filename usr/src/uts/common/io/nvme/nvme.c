@@ -24,18 +24,17 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
-#include <sys/param.h>
-#include <sys/bus.h>
-#include <sys/conf.h>
-#include <sys/module.h>
+#include <sys/types.h>
+#include <sys/ksynch.h>
+#include <sys/kmem.h>
+#include <sys/file.h>
+#include <sys/errno.h>
+#include <sys/open.h>
+#include <sys/buf.h>
+#include <sys/uio.h>
+#include <sys/aio_req.h>
 
-#include <vm/uma.h>
-
-#include <dev/pci/pcireg.h>
-#include <dev/pci/pcivar.h>
 
 #include "nvme_private.h"
 
