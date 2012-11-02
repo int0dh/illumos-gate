@@ -33,6 +33,9 @@
 #include <sys/types.h>
 #endif
 
+#define __packed __attribute__((packed))
+#define __aligned(x) __attribute__((aligned (x)))
+
 #define	NVME_IDENTIFY_CONTROLLER	_IOR('n', 0, struct nvme_controller_data)
 #define	NVME_IDENTIFY_NAMESPACE		_IOR('n', 1, struct nvme_namespace_data)
 #define	NVME_IO_TEST			_IOWR('n', 2, struct nvme_io_test)

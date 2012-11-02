@@ -29,24 +29,8 @@
 #ifndef __NVME_PRIVATE_H__
 #define __NVME_PRIVATE_H__
 
-#include <sys/param.h>
-#include <sys/kernel.h>
-#include <sys/lock.h>
-#include <sys/malloc.h>
-#include <sys/mutex.h>
-#include <sys/rman.h>
-#include <sys/systm.h>
-#include <sys/taskqueue.h>
-
-#include <vm/uma.h>
-
-#include <machine/bus.h>
-
 #include "nvme.h"
-
-#define DEVICE2SOFTC(dev) ((struct nvme_controller *) device_get_softc(dev))
-
-MALLOC_DECLARE(M_NVME);
+#include <sys/queue.h>
 
 #define CHATHAM2
 
@@ -105,14 +89,12 @@ MALLOC_DECLARE(M_NVME);
 #define CACHE_LINE_SIZE		(64)
 #endif
 
-extern uma_zone_t nvme_request_zone;
-
 struct nvme_request {
 
 	struct nvme_command		cmd;
 	void				*payload;
 	uint32_t			payload_size;
-	struct uio			*uio;
+	bd_xfer_t			*xfer;
 	nvme_cb_fn_t			cb_fn;
 	void				*cb_arg;
 	STAILQ_ENTRY(nvme_request)	stailq;
@@ -123,13 +105,12 @@ struct nvme_tracker {
 	SLIST_ENTRY(nvme_tracker)	slist;
 	struct nvme_request		*req;
 	struct nvme_qpair		*qpair;
-	struct callout			timer;
-	bus_dmamap_t			payload_dma_map;
+//	struct callout			timer;
 	uint16_t			cid;
 
 	uint64_t			prp[NVME_MAX_PRP_LIST_ENTRIES];
-	bus_addr_t			prp_bus_addr;
-	bus_dmamap_t			prp_dma_map;
+//	bus_addr_t			prp_bus_addr;
+//	bus_dmamap_t			prp_dma_map;
 };
 
 struct nvme_qpair {
@@ -140,7 +121,6 @@ struct nvme_qpair {
 
 	uint16_t		vector;
 	int			rid;
-	struct resource		*res;
 	void 			*tag;
 
 	uint32_t		max_xfer_size;
@@ -159,12 +139,13 @@ struct nvme_qpair {
 	struct nvme_command	*cmd;
 	struct nvme_completion	*cpl;
 
-	bus_dma_tag_t		dma_tag;
+	ddi_dma_handle_t	dma_tag;
+//	bus_dma_tag_t		dma_tag;
 
-	bus_dmamap_t		cmd_dma_map;
+//	bus_dmamap_t		cmd_dma_map;
 	uint64_t		cmd_bus_addr;
 
-	bus_dmamap_t		cpl_dma_map;
+//	bus_dmamap_t		cpl_dma_map;
 	uint64_t		cpl_bus_addr;
 
 	SLIST_HEAD(, nvme_tracker)	free_tr;
@@ -172,7 +153,7 @@ struct nvme_qpair {
 
 	struct nvme_tracker	**act_tr;
 
-	struct mtx		lock __aligned(CACHE_LINE_SIZE);
+	kmutex_t		lock;
 
 } __aligned(CACHE_LINE_SIZE);
 
@@ -182,7 +163,6 @@ struct nvme_namespace {
 	struct nvme_namespace_data	data;
 	uint16_t			id;
 	uint16_t			flags;
-	struct cdev			*cdev;
 };
 
 /*
@@ -190,20 +170,16 @@ struct nvme_namespace {
  */
 struct nvme_controller {
 
-	device_t		dev;
-
 	uint32_t		ready_timeout_in_ms;
-
-	bus_space_tag_t		bus_tag;
-	bus_space_handle_t	bus_handle;
+	bd_handle_t		bd_handle;
 	int			resource_id;
-	struct resource		*resource;
+//	struct resource		*resource;
 
 #ifdef CHATHAM2
-	bus_space_tag_t		chatham_bus_tag;
-	bus_space_handle_t	chatham_bus_handle;
+//	bus_space_tag_t		chatham_bus_tag;
+//	bus_space_handle_t	chatham_bus_handle;
 	int			chatham_resource_id;
-	struct resource		*chatham_resource;
+//	struct resource		*chatham_resource;
 #endif
 
 	uint32_t		msix_enabled;
@@ -213,19 +189,19 @@ struct nvme_controller {
 	boolean_t		per_cpu_io_queues;
 
 	/* Fields for tracking progress during controller initialization. */
-	struct intr_config_hook	config_hook;
+//	struct intr_config_hook	config_hook;
 	uint32_t		ns_identified;
 	uint32_t		queues_created;
 
 	/* For shared legacy interrupt. */
 	int			rid;
-	struct resource		*res;
+//	struct resource		*res;
 	void			*tag;
-	struct task		task;
-	struct taskqueue	*taskqueue;
+//	struct task		task;
+//	struct taskqueue	*taskqueue;
 
-	bus_dma_tag_t		hw_desc_tag;
-	bus_dmamap_t		hw_desc_map;
+	ddi_dma_handle_t	hw_desc_tag;
+//	bus_dmamap_t		hw_desc_map;
 
 	/** maximum i/o size in bytes */
 	uint32_t		max_xfer_size;
@@ -244,7 +220,7 @@ struct nvme_controller {
 	struct nvme_controller_data	cdata;
 	struct nvme_namespace		ns[NVME_MAX_NAMESPACES];
 
-	struct cdev			*cdev;
+//	struct cdev			*cdev;
 
 	boolean_t			is_started;
 
@@ -258,37 +234,18 @@ struct nvme_controller {
 	offsetof(struct nvme_registers, reg)
 
 #define nvme_mmio_read_4(sc, reg)					       \
-	bus_space_read_4((sc)->bus_tag, (sc)->bus_handle,		       \
-	    nvme_mmio_offsetof(reg))
+	bus_config_get32((sc)->bus_tag, nvme_mmio_offsetof(reg))
 
 #define nvme_mmio_write_4(sc, reg, val)					       \
-	bus_space_write_4((sc)->bus_tag, (sc)->bus_handle,		       \
-	    nvme_mmio_offsetof(reg), val)
+	bus_config_put32((sc)->bus_tag, nvme_mmio_offsetof(reg), val)
 
 #define nvme_mmio_write_8(sc, reg, val) \
 	do {								       \
-		bus_space_write_4((sc)->bus_tag, (sc)->bus_handle,	       \
-		    nvme_mmio_offsetof(reg), val & 0xFFFFFFFF); 	       \
-		bus_space_write_4((sc)->bus_tag, (sc)->bus_handle,	       \
-		    nvme_mmio_offsetof(reg)+4,				       \
+		bus_config_put32((sc)->bus_tag, nvme_mmio_offsetof(reg), val & 0xFFFFFFFF); 	       \
+		bus_config_put32((sc)->bus_tag, nvme_mmio_offsetof(reg)+4,				       \
 		    (val & 0xFFFFFFFF00000000UL) >> 32);		       \
 	} while (0);
 
-#ifdef CHATHAM2
-#define chatham_read_4(softc, reg) \
-	bus_space_read_4((softc)->chatham_bus_tag,			       \
-	    (softc)->chatham_bus_handle, reg)
-
-#define chatham_write_8(sc, reg, val)					       \
-	do {								       \
-		bus_space_write_4((sc)->chatham_bus_tag,		       \
-		    (sc)->chatham_bus_handle, reg, val & 0xffffffff);	       \
-		bus_space_write_4((sc)->chatham_bus_tag,		       \
-		    (sc)->chatham_bus_handle, reg+4,			       \
-		    (val & 0xFFFFFFFF00000000UL) >> 32);		       \
-	} while (0);
-
-#endif /* CHATHAM2 */
 
 #if __FreeBSD_version < 800054
 #define wmb()	__asm volatile("sfence" ::: "memory")
@@ -343,13 +300,13 @@ void	nvme_ctrlr_cmd_asynchronous_event_request(struct nvme_controller *ctrlr,
 						  nvme_cb_fn_t cb_fn,
 						  void *cb_arg);
 
-void	nvme_payload_map(void *arg, bus_dma_segment_t *seg, int nseg,
-			 int error);
-void	nvme_payload_map_uio(void *arg, bus_dma_segment_t *seg, int nseg,
-			     bus_size_t mapsize, int error);
+//void	nvme_payload_map(void *arg, bus_dma_segment_t *seg, int nseg,
+//			 int error);
+//void	nvme_payload_map_uio(void *arg, bus_dma_segment_t *seg, int nseg,
+//			     bus_size_t mapsize, int error);
 
-int	nvme_ctrlr_construct(struct nvme_controller *ctrlr, device_t dev);
-int	nvme_ctrlr_reset(struct nvme_controller *ctrlr);
+//int	nvme_ctrlr_construct(struct nvme_controller *ctrlr, device_t dev);
+//int	nvme_ctrlr_reset(struct nvme_controller *ctrlr);
 /* ctrlr defined as void * to allow use with config_intrhook. */
 void	nvme_ctrlr_start(void *ctrlr_arg);
 void	nvme_ctrlr_submit_admin_request(struct nvme_controller *ctrlr,
@@ -374,13 +331,14 @@ void	nvme_io_qpair_destroy(struct nvme_qpair *qpair);
 int	nvme_ns_construct(struct nvme_namespace *ns, uint16_t id,
 			  struct nvme_controller *ctrlr);
 
-int	nvme_ns_physio(struct cdev *dev, struct uio *uio, int ioflag);
+//int	nvme_ns_physio(struct cdev *dev, struct uio *uio, int ioflag);
 
 void	nvme_sysctl_initialize_ctrlr(struct nvme_controller *ctrlr);
 
 void	nvme_dump_command(struct nvme_command *cmd);
 void	nvme_dump_completion(struct nvme_completion *cpl);
 
+#if 0
 static __inline void
 nvme_single_map(void *arg, bus_dma_segment_t *seg, int nseg, int error)
 {
@@ -388,13 +346,15 @@ nvme_single_map(void *arg, bus_dma_segment_t *seg, int nseg, int error)
 
 	*bus_addr = seg[0].ds_addr;
 }
+#endif
 
 static __inline struct nvme_request *
 nvme_allocate_request(void *payload, uint32_t payload_size, nvme_cb_fn_t cb_fn, 
 		      void *cb_arg)
 {
-	struct nvme_request *req;
+	struct nvme_request *req = NULL;
 
+#if 0
 	req = uma_zalloc(nvme_request_zone, M_NOWAIT | M_ZERO);
 	if (req == NULL)
 		return (NULL);
@@ -403,15 +363,16 @@ nvme_allocate_request(void *payload, uint32_t payload_size, nvme_cb_fn_t cb_fn,
 	req->payload_size = payload_size;
 	req->cb_fn = cb_fn;
 	req->cb_arg = cb_arg;
-
+#endif
 	return (req);
 }
 
 static __inline struct nvme_request *
 nvme_allocate_request_uio(struct uio *uio, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
-	struct nvme_request *req;
+	struct nvme_request *req = NULL;
 
+#if 0
 	req = uma_zalloc(nvme_request_zone, M_NOWAIT | M_ZERO);
 	if (req == NULL)
 		return (NULL);
@@ -419,7 +380,7 @@ nvme_allocate_request_uio(struct uio *uio, nvme_cb_fn_t cb_fn, void *cb_arg)
 	req->uio = uio;
 	req->cb_fn = cb_fn;
 	req->cb_arg = cb_arg;
-
+#endif
 	return (req);
 }
 

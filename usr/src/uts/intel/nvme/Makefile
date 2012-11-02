@@ -55,7 +55,7 @@ INSTALL_TARGET	= $(BINARY) $(ROOTMODULE)
 #
 # Note dependancy on misc/scsi.
 #
-LDFLAGS += -dy -Nmisc/cmlb
+LDFLAGS += -dy -N drv/blkdev
 
 CERRWARN	+= -_gcc=-Wno-uninitialized
 
