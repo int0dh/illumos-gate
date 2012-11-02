@@ -657,6 +657,11 @@ $(OBJS_DIR)/%.o:		$(UTSBASE)/common/io/blkdev/%.c
 	$(COMPILE.c) -o $@ $<
 	$(CTFCONVERT_O)
 
+#TODO: probably it has to be updated ?
+$(OBJS_DIR)/%.o:		$(UTSBASE)/common/io/nvme/%.c
+	$(COMPILE.c) -o $@ $<
+	$(CTFCONVERT_O)
+
 $(OBJS_DIR)/%.o:		$(UTSBASE)/common/io/bpf/%.c
 	$(COMPILE.c) -o $@ $<
 	$(CTFCONVERT_O)
