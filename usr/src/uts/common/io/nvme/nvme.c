@@ -24,18 +24,267 @@
  * SUCH DAMAGE.
  */
 
-
+#include <sys/modctl.h>
+#include <sys/blkdev.h>
 #include <sys/types.h>
-#include <sys/ksynch.h>
-#include <sys/kmem.h>
-#include <sys/file.h>
 #include <sys/errno.h>
-#include <sys/open.h>
-#include <sys/buf.h>
-#include <sys/uio.h>
-#include <sys/aio_req.h>
+#include <sys/param.h>
+#include <sys/stropts.h>
+#include <sys/stream.h>
+#include <sys/strsubr.h>
+#include <sys/kmem.h>
+#include <sys/conf.h>
+#include <sys/devops.h>
+#include <sys/ksynch.h>
+#include <sys/stat.h>
+#include <sys/modctl.h>
+#include <sys/debug.h>
+#include <sys/pci.h>
+#include <sys/sysmacros.h>
+
+#include "nvme.h"
+#include "nvme_private.h"
+
+static int nvme_blk_read(void *arg, bd_xfer_t *xfer);
+static int nvme_blk_write(void *arg, bd_xfer_t *xfer); 
+static void nvme_blk_driveinfo(void *, bd_drive_t *);
+static int  nvme_blk_mediainfo(void *, bd_media_t *);
+static int  nvme_blk_devid_init(void *, dev_info_t *, ddi_devid_t *);
+static int  nvme_blk_flush(void *, bd_xfer_t *xfer);
+
+static char nvme_ident[] = "NVMe block driver";
+
+static bd_ops_t nvme_blk_ops = {
+	.o_version = BD_OPS_VERSION_0,
+	.o_drive_info = nvme_blk_driveinfo,
+	.o_media_info = nvme_blk_mediainfo,
+	.o_devid_init = nvme_blk_devid_init,
+	.o_sync_cache = nvme_blk_flush,
+	.o_read = nvme_blk_read,
+	.o_write = nvme_blk_write,
+};
+
+static int nvme_attach(dev_info_t *dev, ddi_attach_cmd_t cmd);
+static int nvme_detach(dev_info_t *dev, ddi_detach_cmd_t cmd);
+static int nvme_quiesce(dev_info_t *);
+
+static struct dev_ops nvme_dev_ops = {
+	.devo_rev = DEVO_REV,
+	.devo_refcnt = 0,
+	.devo_getinfo = ddi_no_info,
+	.devo_identify = nulldev,
+	.devo_probe = nulldev,
+	.devo_attach = nvme_attach,
+	.devo_detach = nvme_detach,
+	.devo_reset = nodev,
+	.devo_cb_ops = NULL,
+	.devo_bus_ops = NULL,
+	.devo_power = NULL,
+	.devo_quiesce = nvme_quiesce,
+};
+
+extern struct mod_ops mod_driverops;
+
+static struct modldrv modldrv = {
+	.drv_modops = &mod_driverops,
+	.drv_linkinfo = nvme_ident,
+	.drv_dev_ops = &nvme_dev_ops
+}; 
+
+static struct modlinkage modlinkage = {
+	.ml_rev = MODREV_1,
+	.ml_linkage[0] = (void *)&modldrv,
+	.ml_linkage[1] = NULL,
+};
+
+ddi_device_acc_attr_t nvme_attr = {
+	DDI_DEVICE_ATTR_V0,
+	DDI_NEVERSWAP_ACC,
+	DDI_STORECACHING_OK_ACC,
+	DDI_DEFAULT_ACC
+};
+
+/* DMA attributes */
+static ddi_dma_attr_t nvme_req_dma_attr = {
+        DMA_ATTR_V0,                    /* dma_attr version     */
+        0,                              /* dma_attr_addr_lo     */
+        0xFFFFFFFFFFFFFFFFull,          /* dma_attr_addr_hi     */
+        0x00000000FFFFFFFFull,          /* dma_attr_count_max   */
+        1,                              /* dma_attr_align       */
+        1,                              /* dma_attr_burstsizes  */
+        1,                              /* dma_attr_minxfer     */
+        0xFFFFFFFFull,                  /* dma_attr_maxxfer     */
+        0xFFFFFFFFFFFFFFFFull,          /* dma_attr_seg         */
+        1,                              /* dma_attr_sgllen      */
+        1,                              /* dma_attr_granular    */
+  	0,
+};
+
+/* DMA attributes for the data blocks */
+static ddi_dma_attr_t nvme_bd_dma_attr = {
+        DMA_ATTR_V0,                    /* dma_attr version     */
+        0,                              /* dma_attr_addr_lo     */
+        0xFFFFFFFFFFFFFFFFull,          /* dma_attr_addr_hi     */
+        0x00000000FFFFFFFFull,          /* dma_attr_count_max   */
+        1,                              /* dma_attr_align       */
+        1,                              /* dma_attr_burstsizes  */
+        1,                              /* dma_attr_minxfer     */
+        0,                              /* dma_attr_maxxfer, set in attach */
+        0xFFFFFFFFFFFFFFFFull,          /* dma_attr_seg         */
+        0,                              /* dma_attr_sgllen, set in attach */
+        1,                              /* dma_attr_granular    */
+        0,                              /* dma_attr_flags       */
+};
+
+static int
+nvme_blk_read(void *arg, bd_xfer_t *xfer)
+{
+	struct nvme_controller *nvme = (struct nvme_controller *)arg;
+	printf("%s: called!\n", __FUNCTION__);
+	return -1;
+}
+
+static int
+nvme_blk_write(void *arg, bd_xfer_t *xfer)
+{
+	struct nvme_controller *nvme = (struct nvme_controller *)arg;
+	printf("%s: called!\n", __FUNCTION__);
+	return -1;
+}
 
 
+static int
+nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
+{
+	int ret = DDI_SUCCESS;
+	int instance;
+	struct nvme_controller *nvme = NULL;	
+
+	instance = ddi_get_instance(devinfo);
+	printf("nvme_attach is called!, rev 0.01\n");
+
+	switch (cmd)
+	{
+		case DDI_ATTACH:
+			break;
+		case DDI_RESUME:
+		case DDI_PM_RESUME:
+			dev_err(devinfo, CE_WARN, "resume is not supported");
+			ret = DDI_FAILURE;
+			goto exit;
+		default:
+			dev_err(devinfo, CE_WARN, "unknown cmd");
+	
+	}
+	nvme = kmem_zalloc(sizeof(*nvme), KM_SLEEP);
+	if (NULL == nvme)
+	{
+		/* FIXME: release all resources */
+		printf("%s: kmem_zalloc returns NULL!\n", __FUNCTION__);
+		return DDI_FAILURE;
+	}
+
+	ddi_set_driver_private(devinfo, nvme);	
+
+	nvme->bd_handle = bd_alloc_handle(nvme, &nvme_blk_ops, &nvme_bd_dma_attr, KM_SLEEP);
+
+	ret = bd_attach_handle(devinfo, nvme->bd_handle);
+	if (ret != DDI_SUCCESS)
+	{
+		/* FIXME: shall we free some resources ? */
+		printf("failed to attach blkdev :((\n");
+	}
+exit:
+	return ret;
+}
+
+static int
+nvme_detach(dev_info_t *devinfo, ddi_detach_cmd_t cmd)
+{
+	struct nvme_controller *nvme = NULL;
+
+	nvme = (struct nvme_controller *)ddi_get_driver_private(devinfo);
+
+	if (bd_detach_handle(nvme->bd_handle) != DDI_SUCCESS)
+	{
+		printf("cannot detach blkdev handle :(\n");
+		return DDI_FAILURE;
+	}
+	return DDI_SUCCESS;
+}
+
+static int
+nvme_quiesce(dev_info_t *dev)
+{
+	return -1;
+}
+
+static int 
+nvme_blk_flush(void *arg, bd_xfer_t *xfer)
+{
+	return 0;
+}
+
+static void
+nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
+{
+	struct nvme_controller *nvme = (struct nvme_controller *)arg;
+
+	drive->d_qsize = 1024;
+	drive->d_removable = B_FALSE;
+	drive->d_hotpluggable = B_FALSE;
+	drive->d_target = 0;
+	drive->d_lun = 0;
+}
+
+static int
+nvme_blk_mediainfo(void *arg, bd_media_t *media)
+{
+	struct nvme_controller *nvme = (struct nvme_controller *)arg;	
+
+	media->m_nblks = 0x1024; // FIXME
+	media->m_blksize = DEV_BSIZE;
+	media->m_readonly = B_FALSE;
+
+	return 0;
+}
+
+static int
+nvme_blk_devid_init(void *arg, dev_info_t *devinfo, ddi_devid_t *devid)
+{
+	return DDI_FAILURE;
+}
+
+int _init(void)
+{
+	int rv;
+
+	printf("hello from init!");
+	bd_mod_init(&nvme_dev_ops);
+
+	if ((rv = mod_install(&modlinkage)) != 0) {
+		printf("mod_install has returned %d\n", rv);
+		bd_mod_fini(&nvme_dev_ops);
+	}
+	printf("init result %d\n", rv);
+	return rv;
+}
+
+int _fini(void)
+{
+	int rv;
+
+	if ((rv = mod_remove(&modlinkage)) != 0) {
+		bd_mod_fini(&nvme_dev_ops);
+	}
+	return rv;
+}
+
+int _info(struct modinfo *modinfop)
+{
+	return (mod_info(&modlinkage, modinfop));
+}
+#if 0
 #include "nvme_private.h"
 
 struct nvme_consumer {
@@ -391,4 +640,4 @@ nvme_unregister_consumer(struct nvme_consumer *consumer)
 	consumer->cb_fn = NULL;
 	consumer->cb_arg = NULL;
 }
-
+#endif
