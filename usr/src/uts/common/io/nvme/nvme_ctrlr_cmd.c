@@ -108,7 +108,7 @@ nvme_ctrlr_cmd_create_io_cq(struct nvme_controller *ctrlr,
 	cmd->cdw10 = ((io_que->num_entries-1) << 16) | io_que->id;
 	/* 0x3 = interrupts enabled | physically contiguous */
 	cmd->cdw11 = (vector << 16) | 0x3;
-	cmd->prp1 = io_que->cpl_bus_addr;
+	cmd->prp1 = (uint64_t)io_que->cpl_bus_addr;
 
 	nvme_ctrlr_submit_admin_request(ctrlr, req);
 }
@@ -132,7 +132,7 @@ nvme_ctrlr_cmd_create_io_sq(struct nvme_controller *ctrlr,
 	cmd->cdw10 = ((io_que->num_entries-1) << 16) | io_que->id;
 	/* 0x1 = physically contiguous */
 	cmd->cdw11 = (io_que->id << 16) | 0x1;
-	cmd->prp1 = io_que->cmd_bus_addr;
+	cmd->prp1 = (uint64_t)io_que->cmd_bus_addr;
 
 	nvme_ctrlr_submit_admin_request(ctrlr, req);
 }

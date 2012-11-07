@@ -110,7 +110,7 @@ static ddi_dma_attr_t nvme_req_dma_attr = {
         0,                              /* dma_attr_addr_lo     */
         0xFFFFFFFFFFFFFFFFull,          /* dma_attr_addr_hi     */
         0x00000000FFFFFFFFull,          /* dma_attr_count_max   */
-        1,                              /* dma_attr_align       */
+        16,                             /* dma_attr_align       */
         1,                              /* dma_attr_burstsizes  */
         1,                              /* dma_attr_minxfer     */
         0xFFFFFFFFull,                  /* dma_attr_maxxfer     */
@@ -228,7 +228,34 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	}
 	printf("BAR register mapped ok!\n");
 	printf("nvme version register is 0x%08x\n", nvme_mmio_read_4(nvme, vs));
-	
+	/* allocate DMA handle */
+	if (ddi_dma_alloc_handle(devinfo, &nvme_req_dma_attr, DDI_DMA_SLEEP, NULL, &nvme->dma_handle) != DDI_SUCCESS)
+	{
+		/* FIXME: release resources */
+		printf("cannot allocate DMA handle!\n");
+		return DDI_FAILURE;
+	} 	
+	ret = nvme_ctrlr_construct(nvme);
+	if (ret != 0)
+	{
+		printf("cannot initialize controller!\n");
+		return ENXIO;
+	}
+	ret = nvme_ctrlr_reset(nvme);
+	/* TODO: release resources after each failure */
+	if (ret != 0)
+	{
+		printf("cannot reset controller!\n");
+		return ENXIO;
+	} 
+	ret = nvme_ctrlr_reset(nvme);
+	if (ret != 0)
+	{
+		printf("cannot reset controller!\n");
+		return ENXIO;
+	}
+	nvme_ctrlr_start(nvme);
+
 	nvme->bd_handle = bd_alloc_handle(nvme, &nvme_blk_ops, &nvme_bd_dma_attr, KM_SLEEP);
 
 	ret = bd_attach_handle(devinfo, nvme->bd_handle);
@@ -277,7 +304,7 @@ nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
 
 	memset(drive, 0, sizeof(* drive));
 	/* FIXME!! */
-	drive->d_maxxfer = DEV_BSIZE;
+	drive->d_maxxfer = nvme->max_xfer_size;
 	drive->d_qsize = 2;
 	drive->d_removable = B_FALSE;
 	drive->d_hotpluggable = B_FALSE;
@@ -291,8 +318,8 @@ nvme_blk_mediainfo(void *arg, bd_media_t *media)
 	struct nvme_controller *nvme = (struct nvme_controller *)arg;	
 
 	printf("%s: called!\n", __FUNCTION__);
-	media->m_nblks = 0x1024; // FIXME
-	media->m_blksize = DEV_BSIZE;
+	media->m_nblks = nvme_ns_get_num_sectors(&nvme->ns[0]); // FIXME
+	media->m_blksize = nvme_ns_get_sector_size(&nvme->ns[0]);
 	media->m_readonly = B_FALSE;
 
 	return 0;
@@ -330,6 +357,30 @@ int _fini(void)
 int _info(struct modinfo *modinfop)
 {
 	return (mod_info(&modlinkage, modinfop));
+}
+
+void
+nvme_payload_map(struct nvme_tracker *tr, void *payload, uint32_t payload_size)
+{
+	ddi_dma_cookie_t cookie;
+	uint_t cookie_count;
+	/*
+	 * Note that we specified PAGE_SIZE for alignment and max
+	 *  segment size when creating the bus dma tags.  So here
+	 *  we can safely just transfer each segment to its
+	 *  associated PRP entry.
+	 */
+	if (tr->qpair == NULL)
+	{
+		printf("%s: wrong tracker (qpair == NULL)\n", __FUNCTION__);
+		return;
+	}
+	(void)ddi_dma_addr_bind_handle(tr->qpair->ctrlr->dma_handle, 
+(struct as *)NULL, (caddr_t)payload, payload_size, DDI_DMA_RDWR | DDI_DMA_CONSISTENT, DDI_DMA_DONTWAIT, 0, &cookie, &cookie_count);
+
+	tr->req->cmd.prp1 = cookie.dmac_laddress;
+
+	nvme_qpair_submit_cmd(tr->qpair, tr);
 }
 #if 0
 #include "nvme_private.h"
@@ -499,36 +550,6 @@ moduledata_t nvme_mod = {
 DECLARE_MODULE(nvme, nvme_mod, SI_SUB_DRIVERS, SI_ORDER_FIRST);
 
 
-void
-nvme_payload_map(void *arg, bus_dma_segment_t *seg, int nseg, int error)
-{
-	struct nvme_tracker 	*tr = arg;
-	uint32_t		cur_nseg;
-
-	KASSERT(error == 0, ("nvme_payload_map error != 0\n"));
-
-	/*
-	 * Note that we specified PAGE_SIZE for alignment and max
-	 *  segment size when creating the bus dma tags.  So here
-	 *  we can safely just transfer each segment to its
-	 *  associated PRP entry.
-	 */
-	tr->req->cmd.prp1 = seg[0].ds_addr;
-
-	if (nseg == 2) {
-		tr->req->cmd.prp2 = seg[1].ds_addr;
-	} else if (nseg > 2) {
-		cur_nseg = 1;
-		tr->req->cmd.prp2 = (uint64_t)tr->prp_bus_addr;
-		while (cur_nseg < nseg) {
-			tr->prp[cur_nseg-1] =
-			    (uint64_t)seg[cur_nseg].ds_addr;
-			cur_nseg++;
-		}
-	}
-
-	nvme_qpair_submit_cmd(tr->qpair, tr);
-}
 
 static int
 nvme_attach(device_t dev)

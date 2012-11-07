@@ -44,6 +44,8 @@
 #include "nvme.h"
 #include "nvme_private.h"
 
+extern ddi_device_acc_attr_t nvme_dev_attr;
+
 static boolean_t
 nvme_completion_check_retry(const struct nvme_completion *cpl)
 {
@@ -193,6 +195,10 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 {
 	struct nvme_tracker	*tr;
 	uint32_t		i;
+	size_t len;
+	ddi_acc_handle_t  acc_handle;
+	ddi_dma_cookie_t  cookie;
+	uint_t  cookie_count;
 
 	qpair->id = id;
 	qpair->vector = vector;
@@ -243,9 +249,15 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 	qpair->sq_head = qpair->sq_tail = qpair->cq_head = 0;
 
 	/* TODO: how to allocate physically-contig memory in solaris ? */
-	qpair->cmd = kmem_zalloc(qpair->num_entries * sizeof(struct nvme_command), KM_SLEEP);
-	qpair->cpl = kmem_zalloc(qpair->num_entries * sizeof(struct nvme_completion), KM_SLEEP);
+	(void)ddi_dma_mem_alloc(qpair->ctrlr->dma_handle, qpair->num_entries * sizeof(struct nvme_command), &nvme_dev_attr, IOMEM_DATA_UNCACHED, DDI_DMA_SLEEP, NULL, (char **)&qpair->cmd, &len, &acc_handle);
 
+//	qpair->cmd = kmem_zalloc(qpair->num_entries * sizeof(struct nvme_command), KM_SLEEP);
+
+	(void)ddi_dma_mem_alloc(qpair->ctrlr->dma_handle, qpair->num_entries * sizeof(struct nvme_completion), &nvme_dev_attr, IOMEM_DATA_UNCACHED, DDI_DMA_SLEEP, NULL, (char **)&qpair->cpl, &len, &acc_handle);
+
+//	qpair->cpl = kmem_zalloc(qpair->num_entries * sizeof(struct nvme_completion), KM_SLEEP);
+
+	
 #if 0
 	bus_dmamap_create(qpair->dma_tag, 0, &qpair->cmd_dma_map);
 	bus_dmamap_create(qpair->dma_tag, 0, &qpair->cpl_dma_map);
@@ -257,6 +269,18 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 	    qpair->cpl, qpair->num_entries * sizeof(struct nvme_completion),
 	    nvme_single_map, &qpair->cpl_bus_addr, 0);
 #endif
+	(void)ddi_dma_addr_bind_handle(qpair->ctrlr->dma_handle, (struct as *)NULL, (caddr_t)qpair->cmd, qpair->num_entries * sizeof(struct nvme_command),
+	DDI_DMA_RDWR | DDI_DMA_CONSISTENT, DDI_DMA_DONTWAIT, 0, &cookie,
+	&cookie_count);
+ 
+	qpair->cmd_bus_addr = cookie.dmac_laddress;
+
+	(void)ddi_dma_addr_bind_handle(qpair->ctrlr->dma_handle, (struct as *)NULL, (caddr_t)qpair->cpl, qpair->num_entries * sizeof(struct nvme_completion),
+	DDI_DMA_RDWR | DDI_DMA_CONSISTENT, DDI_DMA_DONTWAIT, 0, &cookie,
+	&cookie_count);
+
+	qpair->cpl_bus_addr = cookie.dmac_laddress;
+
 	qpair->sq_tdbl_off = nvme_mmio_offsetof(doorbell[id].sq_tdbl);
 	qpair->cq_hdbl_off = nvme_mmio_offsetof(doorbell[id].cq_hdbl);
 
@@ -429,6 +453,22 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_request *req)
 	SLIST_REMOVE_HEAD(&qpair->free_tr, slist);
 	tr->req = req;
 
+	if (req->xfer != NULL)
+		printf("data transfer is not supported yet!\n");
+	else
+	{
+		if (req->payload_size > 0)
+			nvme_payload_map(tr, req->payload, req->payload_size);
+
+		nvme_qpair_submit_cmd(tr->qpair, tr);
+
+	/* dirty check */
+	printf("sleep..\n");
+	DELAY(1000);
+	printf("tr->qpair->ctrlr->cdata.sn[0] 0x%02x [1] 0x%02x\n",
+		tr->qpair->ctrlr->cdata.sn[0], tr->qpair->ctrlr->cdata.sn[1]);
+		printf("vid 0x%04x\n", tr->qpair->ctrlr->cdata.vid);
+	}
 	/* TODO: reimplement me! */
 #if 0
 	if (req->uio == NULL) {
@@ -440,7 +480,6 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_request *req)
 			if (err != 0)
 				panic("bus_dmamap_load returned non-zero!\n");
 		} else
-			nvme_qpair_submit_cmd(tr->qpair, tr);
 	} else {
 		err = bus_dmamap_load_uio(tr->qpair->dma_tag,
 					  tr->payload_dma_map, req->uio,

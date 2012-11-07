@@ -170,6 +170,7 @@ struct nvme_namespace {
  */
 struct nvme_controller {
 
+	ddi_dma_handle_t        dma_handle;
 	dev_info_t		*dev;
 	uint32_t		ready_timeout_in_ms;
 	ddi_acc_handle_t        nvme_regs_handle;
@@ -257,6 +258,7 @@ struct nvme_controller {
 
 void	nvme_ns_test(struct nvme_namespace *ns, u_long cmd, caddr_t arg);
 
+int    nvme_ctrlr_construct(struct nvme_controller *ctrlr);
 void	nvme_ctrlr_cmd_set_feature(struct nvme_controller *ctrlr,
 				   uint8_t feature, uint32_t cdw11,
 				   void *payload, uint32_t payload_size,
@@ -303,13 +305,12 @@ void	nvme_ctrlr_cmd_asynchronous_event_request(struct nvme_controller *ctrlr,
 						  nvme_cb_fn_t cb_fn,
 						  void *cb_arg);
 
-//void	nvme_payload_map(void *arg, bus_dma_segment_t *seg, int nseg,
-//			 int error);
+void	nvme_payload_map(struct nvme_tracker *tr, void *addr, uint32_t len);
 //void	nvme_payload_map_uio(void *arg, bus_dma_segment_t *seg, int nseg,
 //			     bus_size_t mapsize, int error);
 
 //int	nvme_ctrlr_construct(struct nvme_controller *ctrlr, device_t dev);
-//int	nvme_ctrlr_reset(struct nvme_controller *ctrlr);
+int	nvme_ctrlr_reset(struct nvme_controller *ctrlr);
 /* ctrlr defined as void * to allow use with config_intrhook. */
 void	nvme_ctrlr_start(void *ctrlr_arg);
 void	nvme_ctrlr_submit_admin_request(struct nvme_controller *ctrlr,

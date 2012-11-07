@@ -331,8 +331,10 @@ nvme_ctrlr_enable(struct nvme_controller *ctrlr)
 			return (nvme_ctrlr_wait_for_ready(ctrlr));
 	}
 
+	printf("%s: asq val %lld\n", __FUNCTION__, (long long int)ctrlr->adminq.cmd_bus_addr);
 	nvme_mmio_write_8(ctrlr, asq, ctrlr->adminq.cmd_bus_addr);
 	DELAY(5000);
+	printf("%s: acq val %lld\n", __FUNCTION__, (long long int)ctrlr->adminq.cpl_bus_addr);
 	nvme_mmio_write_8(ctrlr, acq, ctrlr->adminq.cpl_bus_addr);
 	DELAY(5000);
 
@@ -340,6 +342,7 @@ nvme_ctrlr_enable(struct nvme_controller *ctrlr)
 	/* acqs and asqs are 0-based. */
 	aqa.bits.acqs = ctrlr->adminq.num_entries-1;
 	aqa.bits.asqs = ctrlr->adminq.num_entries-1;
+	printf("%s: aqa 0x%08x\n", __FUNCTION__, aqa.raw);
 	nvme_mmio_write_4(ctrlr, aqa, aqa.raw);
 	DELAY(5000);
 
@@ -353,6 +356,7 @@ nvme_ctrlr_enable(struct nvme_controller *ctrlr)
 	/* This evaluates to 0, which is according to spec. */
 	cc.bits.mps = (PAGESIZE >> 13);
 
+	printf("%s: write into CC, val 0x%08x\n", __FUNCTION__, cc.raw);
 	nvme_mmio_write_4(ctrlr, cc, cc.raw);
 	DELAY(5000);
 
@@ -395,15 +399,14 @@ static int
 nvme_ctrlr_identify(struct nvme_controller *ctrlr)
 {
 	struct nvme_completion	cpl;
-	int			status;
 
 	nvme_ctrlr_cmd_identify_controller(ctrlr, &ctrlr->cdata,
 	    nvme_ctrlr_cb, &cpl);
-	if ((status != 0) || cpl.sf_sc || cpl.sf_sct) {
+	if (cpl.sf_sc || cpl.sf_sct) {
 		printf("nvme_identify_controller failed!\n");
 		return (ENXIO);
 	}
-
+	printf("nvme_identify_controller success!\n");
 #if 0
 #ifdef CHATHAM2
 	if (pci_get_devid(ctrlr->dev) == CHATHAM_PCI_ID)
