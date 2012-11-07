@@ -1,14 +1,3 @@
-1) Remove all GEOM-support logic from the driver
-2) Replace all uio's with bd_xfer_t.
-3) Allocate the request queue statically? (nvme_controller::request_queue
-and nvme_controller::free_queue)
- 
-So, when the request goes from BLKDEV to device, we
-a) get the request structure from the free_queue
-b) populate it with stuff from BLKDEV (bd_xfer_t ?)
-c) put the request into the request queue and kick the controller.
-d) wait for the completion ?
-
-
-4) Remove all BSD DMA code/things from the code. All DMA actions
-have to be done by BLKDEV
+1) How to convert any virtual address into the physical one ?
+2) Think on how to notify about command completion
+3)  Work on the interrupts
