@@ -23,42 +23,34 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
+#include <sys/modctl.h>
+#include <sys/blkdev.h>
+#include <sys/types.h>
+#include <sys/errno.h>
 #include <sys/param.h>
-#include <sys/bio.h>
-#include <sys/bus.h>
+#include <sys/stropts.h>
+#include <sys/stream.h>
+#include <sys/strsubr.h>
+#include <sys/kmem.h>
 #include <sys/conf.h>
-#include <sys/disk.h>
-#include <sys/fcntl.h>
-#include <sys/ioccom.h>
-#include <sys/module.h>
-#include <sys/proc.h>
+#include <sys/devops.h>
+#include <sys/ksynch.h>
+#include <sys/stat.h>
+#include <sys/modctl.h>
+#include <sys/debug.h>
+#include <sys/pci.h>
+#include <sys/sysmacros.h>
 
-#include <dev/pci/pcivar.h>
 
 #include "nvme_private.h"
 
 static void
 nvme_ns_cb(void *arg, const struct nvme_completion *status)
 {
-	struct nvme_completion	*cpl = arg;
-	struct mtx		*mtx;
-
-	/*
-	 * Copy status into the argument passed by the caller, so that
-	 *  the caller can check the status to determine if the
-	 *  the request passed or failed.
-	 */
-	memcpy(cpl, status, sizeof(*cpl));
-	mtx = mtx_pool_find(mtxpool_sleep, cpl);
-	mtx_lock(mtx);
-	wakeup(cpl);
-	mtx_unlock(mtx);
+	printf("nvme_ns_cb called\n");
 }
 
+#if 0
 static int
 nvme_ns_ioctl(struct cdev *cdev, u_long cmd, caddr_t arg, int flag,
     struct thread *td)
@@ -178,7 +170,7 @@ static struct cdevsw nvme_ns_cdevsw = {
 	.d_strategy =	nvme_ns_strategy,
 	.d_ioctl =	nvme_ns_ioctl
 };
-
+#endif
 uint32_t
 nvme_ns_get_max_io_xfer_size(struct nvme_namespace *ns)
 {
@@ -221,6 +213,7 @@ nvme_ns_get_model_number(struct nvme_namespace *ns)
 	return ((const char *)ns->ctrlr->cdata.mn);
 }
 
+#if 0
 static void
 nvme_ns_bio_done(void *arg, const struct nvme_completion *status)
 {
@@ -234,7 +227,6 @@ nvme_ns_bio_done(void *arg, const struct nvme_completion *status)
 
 	bp_cb_fn(bp, status);
 }
-
 int
 nvme_ns_bio_process(struct nvme_namespace *ns, struct bio *bp,
 	nvme_cb_fn_t cb_fn)
@@ -285,85 +277,30 @@ nvme_ns_bio_process(struct nvme_namespace *ns, struct bio *bp,
 
 	return (err);
 }
-
-#ifdef CHATHAM2
-static void
-nvme_ns_populate_chatham_data(struct nvme_namespace *ns)
-{
-	struct nvme_controller		*ctrlr;
-	struct nvme_namespace_data	*nsdata;
-
-	ctrlr = ns->ctrlr;
-	nsdata = &ns->data;
-
-	nsdata->nsze = ctrlr->chatham_lbas;
-	nsdata->ncap = ctrlr->chatham_lbas;
-	nsdata->nuse = ctrlr->chatham_lbas;
-
-	/* Chatham2 doesn't support thin provisioning. */
-	nsdata->nsfeat.thin_prov = 0;
-
-	/* Set LBA size to 512 bytes. */
-	nsdata->lbaf[0].lbads = 9;
-}
-#endif /* CHATHAM2 */
+#endif
 
 int
 nvme_ns_construct(struct nvme_namespace *ns, uint16_t id,
     struct nvme_controller *ctrlr)
 {
 	struct nvme_completion	cpl;
-	struct mtx		*mtx;
 	int			status;
 
 	ns->ctrlr = ctrlr;
 	ns->id = id;
 
-#ifdef CHATHAM2
-	if (pci_get_devid(ctrlr->dev) == CHATHAM_PCI_ID)
-		nvme_ns_populate_chatham_data(ns);
-	else {
-#endif
-		mtx = mtx_pool_find(mtxpool_sleep, &cpl);
-
-		mtx_lock(mtx);
-		nvme_ctrlr_cmd_identify_namespace(ctrlr, id, &ns->data,
+	nvme_ctrlr_cmd_identify_namespace(ctrlr, id, &ns->data,
 		    nvme_ns_cb, &cpl);
-		status = msleep(&cpl, mtx, PRIBIO, "nvme_start", hz*5);
-		mtx_unlock(mtx);
-		if ((status != 0) || cpl.sf_sc || cpl.sf_sct) {
-			printf("nvme_identify_namespace failed!\n");
-			return (ENXIO);
-		}
-#ifdef CHATHAM2
+	if (cpl.sf_sc || cpl.sf_sct) {
+		printf("nvme_identify_namespace failed!\n");
+		return (ENXIO);
 	}
-#endif
 
 	if (ctrlr->cdata.oncs.dsm && ns->data.nsfeat.thin_prov)
 		ns->flags |= NVME_NS_DEALLOCATE_SUPPORTED;
 
 	if (ctrlr->cdata.vwc.present)
 		ns->flags |= NVME_NS_FLUSH_SUPPORTED;
-
-/*
- * MAKEDEV_ETERNAL was added in r210923, for cdevs that will never
- *  be destroyed.  This avoids refcounting on the cdev object.
- *  That should be OK case here, as long as we're not supporting PCIe
- *  surprise removal nor namespace deletion.
- */
-#ifdef MAKEDEV_ETERNAL_KLD
-	ns->cdev = make_dev_credf(MAKEDEV_ETERNAL_KLD, &nvme_ns_cdevsw, 0,
-	    NULL, UID_ROOT, GID_WHEEL, 0600, "nvme%dns%d",
-	    device_get_unit(ctrlr->dev), ns->id);
-#else
-	ns->cdev = make_dev_credf(0, &nvme_ns_cdevsw, 0,
-	    NULL, UID_ROOT, GID_WHEEL, 0600, "nvme%dns%d",
-	    device_get_unit(ctrlr->dev), ns->id);
-#endif
-
-	if (ns->cdev) {
-		ns->cdev->si_drv1 = ns;
-	}
 
 	return (0);
 }

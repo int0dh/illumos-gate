@@ -97,7 +97,7 @@ static struct modlinkage modlinkage = {
 	.ml_linkage[1] = NULL,
 };
 
-ddi_device_acc_attr_t nvme_attr = {
+ddi_device_acc_attr_t nvme_dev_attr = {
 	DDI_DEVICE_ATTR_V0,
 	DDI_NEVERSWAP_ACC,
 	DDI_STORECACHING_OK_ACC,
@@ -136,6 +136,34 @@ static ddi_dma_attr_t nvme_bd_dma_attr = {
         0,                              /* dma_attr_flags       */
 };
 
+void
+nvme_dump_command(struct nvme_command *cmd)
+{
+#if 0
+	printf("opc:%lx f:%lx r1:%lx cid:%lx nsid:%lx r2:%lx r3:%lx "
+	    "mptr:%qx prp1:%qx prp2:%qx cdw:%x %x %x %x %x %x\n",
+	    cmd->opc, cmd->fuse, cmd->rsvd1, cmd->cid, cmd->nsid,
+	    cmd->rsvd2, cmd->rsvd3,
+	    (long long unsigned int)cmd->mptr,
+	    (long long unsigned int)cmd->prp1,
+	    (long long unsigned int)cmd->prp2,
+	    cmd->cdw10, cmd->cdw11, cmd->cdw12, cmd->cdw13, cmd->cdw14,
+	    cmd->cdw15);
+#endif
+}
+
+void
+nvme_dump_completion(struct nvme_completion *cpl)
+{
+#if 0
+	printf("cdw0:%08x sqhd:%04x sqid:%04x "
+	    "cid:%04x p:%x sc:%02x sct:%x m:%x dnr:%x\n",
+	    cpl->cdw0, cpl->sqhd, cpl->sqid,
+	    cpl->cid, cpl->p, cpl->sf_sc, cpl->sf_sct, cpl->sf_m,
+	    cpl->sf_dnr);
+#endif
+}
+
 static int
 nvme_blk_read(void *arg, bd_xfer_t *xfer)
 {
@@ -160,6 +188,10 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	int instance;
 	struct nvme_controller *nvme = NULL;	
 
+	ddi_acc_handle_t pci;
+	uint16_t vendid;
+	uint16_t devid;
+
 	instance = ddi_get_instance(devinfo);
 	printf("nvme_attach is called!, rev 0.01\n");
 
@@ -176,16 +208,27 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 			dev_err(devinfo, CE_WARN, "unknown cmd");
 	
 	}
-	nvme = kmem_zalloc(sizeof(*nvme), KM_SLEEP);
-	if (NULL == nvme)
+	if (pci_config_setup(devinfo, &pci) != DDI_SUCCESS)
 	{
-		/* FIXME: release all resources */
-		printf("%s: kmem_zalloc returns NULL!\n", __FUNCTION__);
+		printf("cannot setup pci config space!\n");
 		return DDI_FAILURE;
 	}
+	vendid = pci_config_get16(pci, 0);
+	devid = pci_config_get16(pci, 2);
 
+	printf("device id 0x%08x vendor id 0x%08x\n", vendid, devid); 
+	nvme = kmem_zalloc(sizeof(*nvme), KM_SLEEP);
 	ddi_set_driver_private(devinfo, nvme);	
 
+	if (ddi_regs_map_setup(devinfo, 1, (caddr_t *)&nvme->nvme_regs_base,
+		0, 0, &nvme_dev_attr, &nvme->nvme_regs_handle) != DDI_SUCCESS)
+	{
+		printf("cannot map BAR register\n");
+		return DDI_FAILURE;
+	}
+	printf("BAR register mapped ok!\n");
+	printf("nvme version register is 0x%08x\n", nvme_mmio_read_4(nvme, vs));
+	
 	nvme->bd_handle = bd_alloc_handle(nvme, &nvme_blk_ops, &nvme_bd_dma_attr, KM_SLEEP);
 
 	ret = bd_attach_handle(devinfo, nvme->bd_handle);
@@ -230,7 +273,12 @@ nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
 {
 	struct nvme_controller *nvme = (struct nvme_controller *)arg;
 
-	drive->d_qsize = 1024;
+	printf("%s: called!\n", __FUNCTION__);
+
+	memset(drive, 0, sizeof(* drive));
+	/* FIXME!! */
+	drive->d_maxxfer = DEV_BSIZE;
+	drive->d_qsize = 2;
 	drive->d_removable = B_FALSE;
 	drive->d_hotpluggable = B_FALSE;
 	drive->d_target = 0;
@@ -242,6 +290,7 @@ nvme_blk_mediainfo(void *arg, bd_media_t *media)
 {
 	struct nvme_controller *nvme = (struct nvme_controller *)arg;	
 
+	printf("%s: called!\n", __FUNCTION__);
 	media->m_nblks = 0x1024; // FIXME
 	media->m_blksize = DEV_BSIZE;
 	media->m_readonly = B_FALSE;
@@ -252,32 +301,30 @@ nvme_blk_mediainfo(void *arg, bd_media_t *media)
 static int
 nvme_blk_devid_init(void *arg, dev_info_t *devinfo, ddi_devid_t *devid)
 {
-	return DDI_FAILURE;
+	printf("%s: called!\n", __FUNCTION__);
+	return DDI_SUCCESS;
 }
 
 int _init(void)
 {
 	int rv;
 
-	printf("hello from init!");
 	bd_mod_init(&nvme_dev_ops);
 
 	if ((rv = mod_install(&modlinkage)) != 0) {
 		printf("mod_install has returned %d\n", rv);
 		bd_mod_fini(&nvme_dev_ops);
 	}
-	printf("init result %d\n", rv);
 	return rv;
 }
 
 int _fini(void)
 {
-	int rv;
-
-	if ((rv = mod_remove(&modlinkage)) != 0) {
+	if (mod_remove(&modlinkage) == 0)
+	{
 		bd_mod_fini(&nvme_dev_ops);
 	}
-	return rv;
+	return DDI_SUCCESS;
 }
 
 int _info(struct modinfo *modinfop)
@@ -451,29 +498,6 @@ moduledata_t nvme_mod = {
 
 DECLARE_MODULE(nvme, nvme_mod, SI_SUB_DRIVERS, SI_ORDER_FIRST);
 
-void
-nvme_dump_command(struct nvme_command *cmd)
-{
-	printf("opc:%x f:%x r1:%x cid:%x nsid:%x r2:%x r3:%x "
-	    "mptr:%qx prp1:%qx prp2:%qx cdw:%x %x %x %x %x %x\n",
-	    cmd->opc, cmd->fuse, cmd->rsvd1, cmd->cid, cmd->nsid,
-	    cmd->rsvd2, cmd->rsvd3,
-	    (long long unsigned int)cmd->mptr,
-	    (long long unsigned int)cmd->prp1,
-	    (long long unsigned int)cmd->prp2,
-	    cmd->cdw10, cmd->cdw11, cmd->cdw12, cmd->cdw13, cmd->cdw14,
-	    cmd->cdw15);
-}
-
-void
-nvme_dump_completion(struct nvme_completion *cpl)
-{
-	printf("cdw0:%08x sqhd:%04x sqid:%04x "
-	    "cid:%04x p:%x sc:%02x sct:%x m:%x dnr:%x\n",
-	    cpl->cdw0, cpl->sqhd, cpl->sqid,
-	    cpl->cid, cpl->p, cpl->sf_sc, cpl->sf_sct, cpl->sf_m,
-	    cpl->sf_dnr);
-}
 
 void
 nvme_payload_map(void *arg, bus_dma_segment_t *seg, int nseg, int error)

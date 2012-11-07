@@ -50,7 +50,7 @@
  *  that real max number of PRP entries we support is 32+1, which
  *  results in a max xfer size of 32*PAGE_SIZE.
  */
-#define NVME_MAX_XFER_SIZE	NVME_MAX_PRP_LIST_ENTRIES * PAGE_SIZE
+#define NVME_MAX_XFER_SIZE	NVME_MAX_PRP_LIST_ENTRIES * PAGESIZE
 
 #define NVME_ADMIN_TRACKERS	(16)
 #define NVME_ADMIN_ENTRIES	(128)
@@ -94,7 +94,7 @@ struct nvme_request {
 	struct nvme_command		cmd;
 	void				*payload;
 	uint32_t			payload_size;
-	bd_xfer_t			*xfer;
+	bd_xfer_t			*xfer; /* for now - one request - one xfer */
 	nvme_cb_fn_t			cb_fn;
 	void				*cb_arg;
 	STAILQ_ENTRY(nvme_request)	stailq;
@@ -170,8 +170,12 @@ struct nvme_namespace {
  */
 struct nvme_controller {
 
+	dev_info_t		*dev;
 	uint32_t		ready_timeout_in_ms;
+	ddi_acc_handle_t        nvme_regs_handle;
+	uint8_t			*nvme_regs_base;
 	bd_handle_t		bd_handle;
+	boolean_t		is_chatam2;
 	int			resource_id;
 //	struct resource		*resource;
 
@@ -234,17 +238,16 @@ struct nvme_controller {
 	offsetof(struct nvme_registers, reg)
 
 #define nvme_mmio_read_4(sc, reg)					       \
-	bus_config_get32((sc)->bus_tag, nvme_mmio_offsetof(reg))
+	ddi_get32((sc)->nvme_regs_handle, (uint32_t *)((sc)->nvme_regs_base + nvme_mmio_offsetof(reg)))
 
 #define nvme_mmio_write_4(sc, reg, val)					       \
-	bus_config_put32((sc)->bus_tag, nvme_mmio_offsetof(reg), val)
+	ddi_put32((sc)->nvme_regs_handle, (uint32_t *)((sc)->nvme_regs_base + nvme_mmio_offsetof(reg)), val)
 
 #define nvme_mmio_write_8(sc, reg, val) \
-	do {								       \
-		bus_config_put32((sc)->bus_tag, nvme_mmio_offsetof(reg), val & 0xFFFFFFFF); 	       \
-		bus_config_put32((sc)->bus_tag, nvme_mmio_offsetof(reg)+4,				       \
-		    (val & 0xFFFFFFFF00000000UL) >> 32);		       \
-	} while (0);
+	do { \
+		ddi_put32((sc)->nvme_regs_handle, (uint32_t *)((sc)->nvme_regs_base + nvme_mmio_offsetof(reg)), (val) & 0xFFFFFFFF); \
+		ddi_put32((sc)->nvme_regs_handle, (uint32_t *)((sc)->nvme_regs_base + nvme_mmio_offsetof(reg) + 4), ((val) & 0xFFFFFFFF00000000UL) >> 32); \
+	} while (0)
 
 
 #if __FreeBSD_version < 800054
@@ -354,8 +357,7 @@ nvme_allocate_request(void *payload, uint32_t payload_size, nvme_cb_fn_t cb_fn,
 {
 	struct nvme_request *req = NULL;
 
-#if 0
-	req = uma_zalloc(nvme_request_zone, M_NOWAIT | M_ZERO);
+	req = kmem_zalloc(sizeof(* req), KM_NOSLEEP);
 	if (req == NULL)
 		return (NULL);
 
@@ -363,7 +365,7 @@ nvme_allocate_request(void *payload, uint32_t payload_size, nvme_cb_fn_t cb_fn,
 	req->payload_size = payload_size;
 	req->cb_fn = cb_fn;
 	req->cb_arg = cb_arg;
-#endif
+
 	return (req);
 }
 
@@ -373,7 +375,7 @@ nvme_allocate_request_uio(struct uio *uio, nvme_cb_fn_t cb_fn, void *cb_arg)
 	struct nvme_request *req = NULL;
 
 #if 0
-	req = uma_zalloc(nvme_request_zone, M_NOWAIT | M_ZERO);
+	req = kmem_zalloc(sizeof(* req), KM_NOSLEEP);
 	if (req == NULL)
 		return (NULL);
 
@@ -384,6 +386,6 @@ nvme_allocate_request_uio(struct uio *uio, nvme_cb_fn_t cb_fn, void *cb_arg)
 	return (req);
 }
 
-#define nvme_free_request(req)	uma_zfree(nvme_request_zone, req)
+#define nvme_free_request(req)	kmem_free(req, sizeof(*req))
 
 #endif /* __NVME_PRIVATE_H__ */

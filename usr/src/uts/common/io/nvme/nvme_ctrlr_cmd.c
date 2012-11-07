@@ -23,9 +23,25 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
+#include <sys/modctl.h>
+#include <sys/blkdev.h>
+#include <sys/types.h>
+#include <sys/errno.h>
+#include <sys/param.h>
+#include <sys/stropts.h>
+#include <sys/stream.h>
+#include <sys/strsubr.h>
+#include <sys/kmem.h>
+#include <sys/conf.h>
+#include <sys/devops.h>
+#include <sys/ksynch.h>
+#include <sys/stat.h>
+#include <sys/modctl.h>
+#include <sys/debug.h>
+#include <sys/pci.h>
+#include <sys/sysmacros.h>
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
+#include "nvme.h"
 
 #include "nvme_private.h"
 
@@ -230,14 +246,12 @@ nvme_ctrlr_cmd_set_interrupt_coalescing(struct nvme_controller *ctrlr,
 	uint32_t cdw11;
 
 	if ((microseconds/100) >= 0x100) {
-		KASSERT(FALSE, ("intr coal time > 255*100 microseconds\n"));
 		printf("invalid coal time %d, disabling\n", microseconds);
 		microseconds = 0;
 		threshold = 0;
 	}
 
 	if (threshold >= 0x100) {
-		KASSERT(FALSE, ("intr threshold > 255\n"));
 		printf("invalid threshold %d, disabling\n", threshold);
 		threshold = 0;
 		microseconds = 0;
