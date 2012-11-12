@@ -386,6 +386,7 @@ nvme_allocate_request(void *payload, uint32_t payload_size, nvme_cb_fn_t cb_fn,
 	mutex_init(&req->mutex, NULL, MUTEX_DRIVER, NULL);
 	cv_init(&req->cv, NULL, CV_DRIVER, NULL);
 
+	printf("mutex at %p initialized!\n", &req->mutex);
 	return (req);
 }
 

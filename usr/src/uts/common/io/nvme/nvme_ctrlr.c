@@ -459,27 +459,38 @@ nvme_ctrlr_start(void *ctrlr_arg)
 	ctrlr->is_started = B_TRUE;
 }
 
+/* one handler per I/O qpair */
+/* TODO: this code has to be run in DPC context vs IRQ context */
 static void
 nvme_ctrlr_intx_task(void *arg, int pending)
 {
-	struct nvme_controller *ctrlr = arg;
+	struct nvme_qpair *qpair = arg;
 
-	nvme_qpair_process_completions(&ctrlr->adminq);
+	if (qpair->cpl)
+		nvme_qpair_process_completions(qpair);
 
-	if (ctrlr->ioq[0].cpl)
-		nvme_qpair_process_completions(&ctrlr->ioq[0]);
-
-	nvme_mmio_write_4(ctrlr, intmc, 1);
 }
 
+/* NOTE: all interrupt handlers do not modify the nvme_controller (it`s arg)
+* so it seems we should not take care about synhronization stuff */
 uint_t 
 nvme_ctrlr_intx_handler(char *arg, char *unused)
 {
 	struct nvme_controller *ctrlr = (struct nvme_controller *)arg;
+	int i;
 
-        printf("nvme interrupt\n");
-	nvme_ctrlr_intx_task(ctrlr, 0);
+	/* TODO: WE MUST SCHEDULE DPC HERE INSTEAD OF DIRECT CALL */
+	/* process admin qpair */
+	nvme_qpair_process_completions(&ctrlr->adminq);
 
+	/* process IO qpairs */
+	/* TODO: we must extract the IRQ vector number to chose the properly queue */
+	for (i = 0; i < ctrlr->num_io_queues; i ++)
+		nvme_ctrlr_intx_task(&ctrlr->ioq[i], 0);
+	/* end of the code to be put into DPC context */
+
+	/* we do this code to mask the interrupt until DPC occurs.
+	* it is quite unusable until DPC implemented */ 
 	nvme_mmio_write_4(ctrlr, intms, 1);
 
 	return DDI_INTR_CLAIMED;
@@ -500,7 +511,7 @@ nvme_interrupt_disable(struct nvme_controller *nvme)
 }
 
 static int 
-nvme_register_interrupt(struct nvme_controller *nvme, int intr_type)
+nvme_register_interrupts(struct nvme_controller *nvme, int intr_type)
 {
 	int count, actual;
 	int ret;
@@ -543,6 +554,8 @@ nvme_register_interrupt(struct nvme_controller *nvme, int intr_type)
 	printf("%d interrupt handlers registered ok!\n", count); 
 	return DDI_SUCCESS;
 }
+/* it is not clear yet how to get CPU count, so let`s hardcode the value for now */
+#define CPU_COUNT 2
 /*FIXME: check status for each DDI function */
 static int
 nvme_ctrlr_configure_intx(struct nvme_controller *nvme)
@@ -561,12 +574,13 @@ nvme_ctrlr_configure_intx(struct nvme_controller *nvme)
 		nvme->msix_enabled = 1;
 		intr_type &= ~DDI_INTR_TYPE_FIXED;
 	}
-	nvme_register_interrupt(nvme, intr_type);
+	nvme_register_interrupts(nvme, intr_type);
 	
 	/* allocate one queue par per available interrupt */
 	/* TODO: do not allocate more than number of CPUs */
 	/* otherwise, some performance degradation may occur */
-	nvme->num_io_queues = nvme->intr_size / sizeof(ddi_intr_handle_t);
+	nvme->num_io_queues = min(nvme->intr_size / sizeof(ddi_intr_handle_t), CPU_COUNT);
+	/* always use one I/O qpair per CPU for best performance */
 	nvme->per_cpu_io_queues = 1;
 	nvme->rid = 0;
 	return (0);
@@ -667,6 +681,8 @@ nvme_ctrlr_submit_admin_request(struct nvme_controller *ctrlr,
 	int ret;
 
 	deadline = ddi_get_lbolt() + (clock_t )drv_usectohz(3 * 1000000);
+
+	printf("%s: mutex at %p\n", __FUNCTION__, &req->mutex);
 
 	mutex_enter(&req->mutex);
 	nvme_qpair_submit_request(&ctrlr->adminq, req);
