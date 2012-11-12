@@ -321,12 +321,12 @@ static int
 nvme_ctrlr_set_num_qpairs(struct nvme_controller *ctrlr)
 {
 	struct nvme_completion	cpl;
-	int			cq_allocated, sq_allocated, status;
+	int			cq_allocated, sq_allocated;
 
 	nvme_ctrlr_cmd_set_num_queues(ctrlr, ctrlr->num_io_queues,
 	    nvme_ctrlr_cb, &cpl);
 
-	if ((status != 0) || cpl.sf_sc || cpl.sf_sct) {
+	if (cpl.sf_sc || cpl.sf_sct) {
 		printf("nvme_set_num_queues failed!\n");
 		return (ENXIO);
 	}
@@ -361,7 +361,7 @@ nvme_ctrlr_create_qpairs(struct nvme_controller *ctrlr)
 {
 	struct nvme_qpair	*qpair;
 	struct nvme_completion	cpl;
-	int			i, status;
+	int			i;
 
 	for (i = 0; i < ctrlr->num_io_queues; i++) {
 		qpair = &ctrlr->ioq[i];
@@ -369,7 +369,7 @@ nvme_ctrlr_create_qpairs(struct nvme_controller *ctrlr)
 		nvme_ctrlr_cmd_create_io_cq(ctrlr, qpair, qpair->vector,
 		    nvme_ctrlr_cb, &cpl);
 
-		if ((status != 0) || cpl.sf_sc || cpl.sf_sct) {
+		if (cpl.sf_sc || cpl.sf_sct) {
 			printf("nvme_create_io_cq failed!\n");
 			return (ENXIO);
 		}
@@ -377,7 +377,7 @@ nvme_ctrlr_create_qpairs(struct nvme_controller *ctrlr)
 		nvme_ctrlr_cmd_create_io_sq(qpair->ctrlr, qpair,
 		    nvme_ctrlr_cb, &cpl);
 
-		if ((status != 0) || cpl.sf_sc || cpl.sf_sct) {
+		if (cpl.sf_sc || cpl.sf_sct) {
 			printf("nvme_create_io_sq failed!\n");
 			return (ENXIO);
 		}
