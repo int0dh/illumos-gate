@@ -45,9 +45,14 @@
 #include "nvme_private.h"
 
 static void
-nvme_ns_cb(void *arg, const struct nvme_completion *status)
+nvme_ns_cb(void *arg, const struct nvme_completion *status, struct nvme_request *req)
 {
 	printf("nvme_ns_cb called\n");
+
+	mutex_enter(&req->mutex);
+	cv_broadcast(&req->cv);
+	mutex_exit(&req->mutex);
+
 }
 
 #if 0

@@ -95,6 +95,10 @@ struct nvme_request {
 	void				*payload;
 	uint32_t			payload_size;
 	bd_xfer_t			*xfer; /* for now - one request - one xfer */
+	
+	kcondvar_t			cv;
+	kmutex_t			mutex;
+
 	nvme_cb_fn_t			cb_fn;
 	void				*cb_arg;
 	STAILQ_ENTRY(nvme_request)	stailq;
@@ -116,6 +120,9 @@ struct nvme_tracker {
 struct nvme_qpair {
 
 	struct nvme_controller	*ctrlr;
+	ddi_acc_handle_t	cmd_dma_acc_handle;
+	ddi_acc_handle_t	cpl_dma_acc_handle;
+
 	uint32_t		id;
 	uint32_t		phase;
 
@@ -170,8 +177,14 @@ struct nvme_namespace {
  */
 struct nvme_controller {
 
+	dev_info_t		*devinfo;
 	ddi_dma_handle_t        dma_handle;
 	dev_info_t		*dev;
+	int			nvme_nbloks;
+
+	ddi_intr_handle_t	*intr_handle;
+	int			intr_size;
+
 	uint32_t		ready_timeout_in_ms;
 	ddi_acc_handle_t        nvme_regs_handle;
 	uint8_t			*nvme_regs_base;
@@ -255,6 +268,9 @@ struct nvme_controller {
 #define wmb()	__asm volatile("sfence" ::: "memory")
 #define mb()	__asm volatile("mfence" ::: "memory")
 #endif
+
+void    nvme_interrupt_enable(struct nvme_controller *nvme);
+void	nvme_interrupt_disable(struct nvme_controller *nvme);
 
 void	nvme_ns_test(struct nvme_namespace *ns, u_long cmd, caddr_t arg);
 
@@ -367,26 +383,18 @@ nvme_allocate_request(void *payload, uint32_t payload_size, nvme_cb_fn_t cb_fn,
 	req->cb_fn = cb_fn;
 	req->cb_arg = cb_arg;
 
+	mutex_init(&req->mutex, NULL, MUTEX_DRIVER, NULL);
+	cv_init(&req->cv, NULL, CV_DRIVER, NULL);
+
 	return (req);
 }
 
-static __inline struct nvme_request *
-nvme_allocate_request_uio(struct uio *uio, nvme_cb_fn_t cb_fn, void *cb_arg)
+static __inline void
+nvme_free_request(struct nvme_request *req)
 {
-	struct nvme_request *req = NULL;
+	mutex_destroy(&req->mutex);
+	cv_destroy(&req->cv);
 
-#if 0
-	req = kmem_zalloc(sizeof(* req), KM_NOSLEEP);
-	if (req == NULL)
-		return (NULL);
-
-	req->uio = uio;
-	req->cb_fn = cb_fn;
-	req->cb_arg = cb_arg;
-#endif
-	return (req);
+	kmem_free(req, sizeof(*req));
 }
-
-#define nvme_free_request(req)	kmem_free(req, sizeof(*req))
-
 #endif /* __NVME_PRIVATE_H__ */

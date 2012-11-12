@@ -168,18 +168,109 @@ static int
 nvme_blk_read(void *arg, bd_xfer_t *xfer)
 {
 	struct nvme_controller *nvme = (struct nvme_controller *)arg;
+	struct nvme_request *req;
+	struct nvme_command *cmd;
+
+	int npages = 0;
+	caddr_t data_start;
+	int data_len, i;
+
+	if (xfer->x_flags & BD_XFER_POLL)
+	{
+		printf("%s: polling mode is not supported\n", __FUNCTION__);
+		return EINVAL;
+	}
+	if ((xfer->x_blkno + xfer->x_nblks) > nvme->ns[0].data.nsze)	 
+		return EINVAL;
+
+	data_len = xfer->x_nblks * nvme_ns_get_sector_size(&nvme->ns[0]);
+
+	npages = (data_len) / PAGESIZE;
+	/* shall we setup some DMA ? */
+#if 0
+	if (xfer->x_ndmac)
+		data_start = (caddr_t)xfer->x_dmac.dmac_laddress;
+	else
+#endif
+		data_start = (caddr_t)xfer->x_kaddr;
+		
+	/* it seems NVMe cannot handle more than PAGE_SIZE per I/O request ._. */
+	for (i = 0; i < npages; i ++)
+	{
+		int transfer_size = min(PAGESIZE, data_len);
+		uint64_t lba;
+
+		req = nvme_allocate_request(data_start, transfer_size, NULL, NULL);
+
+		cmd = &req->cmd;
+		cmd->opc = NVME_OPC_READ;
+		cmd->nsid = 0;
+		lba = xfer->x_blkno / nvme_ns_get_sector_size(0);
+
+		*(uint64_t *)&cmd->cdw10 = lba;
+		cmd->cdw12 = transfer_size;
+
+		nvme_ctrlr_submit_io_request(nvme, req);
+
+		data_len -= transfer_size; 
+	}	
 	printf("%s: called!\n", __FUNCTION__);
-	return -1;
+	return DDI_SUCCESS; 
 }
 
 static int
 nvme_blk_write(void *arg, bd_xfer_t *xfer)
 {
 	struct nvme_controller *nvme = (struct nvme_controller *)arg;
-	printf("%s: called!\n", __FUNCTION__);
-	return -1;
-}
+	struct nvme_request *req;
+	struct nvme_command *cmd;
 
+	int npages = 0;
+	caddr_t data_start;
+	int data_len, i;
+
+	if (xfer->x_flags & BD_XFER_POLL)
+	{
+		printf("%s: polling mode is not supported\n", __FUNCTION__);
+		return EINVAL;
+	}
+	if ((xfer->x_blkno + xfer->x_nblks) > nvme->ns[0].data.nsze)	 
+		return EINVAL;
+
+	data_len = xfer->x_nblks * nvme_ns_get_sector_size(&nvme->ns[0]);
+
+	npages = (data_len) / PAGESIZE;
+	/* shall we setup some DMA ? */
+#if 0
+	if (xfer->x_ndmac)
+		data_start = (caddr_t)xfer->x_dmac.dmac_laddress;
+	else
+#endif
+		data_start = (caddr_t)xfer->x_kaddr;
+		
+	/* it seems NVMe cannot handle more than PAGE_SIZE per I/O request ._. */
+	for (i = 0; i < npages; i ++)
+	{
+		int transfer_size = min(PAGESIZE, data_len);
+		uint64_t lba;
+
+		req = nvme_allocate_request(data_start, transfer_size, NULL, NULL);
+
+		cmd = &req->cmd;
+		cmd->opc = NVME_OPC_WRITE;
+		cmd->nsid = 0;
+		lba = xfer->x_blkno / nvme_ns_get_sector_size(0);
+
+		*(uint64_t *)&cmd->cdw10 = lba;
+		cmd->cdw12 = transfer_size;
+
+		nvme_ctrlr_submit_io_request(nvme, req);
+
+		data_len -= transfer_size; 
+	}	
+	printf("%s: called!\n", __FUNCTION__);
+	return DDI_SUCCESS; 
+}
 
 static int
 nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
@@ -228,6 +319,9 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	}
 	printf("BAR register mapped ok!\n");
 	printf("nvme version register is 0x%08x\n", nvme_mmio_read_4(nvme, vs));
+
+	nvme->devinfo = devinfo;
+
 	/* allocate DMA handle */
 	if (ddi_dma_alloc_handle(devinfo, &nvme_req_dma_attr, DDI_DMA_SLEEP, NULL, &nvme->dma_handle) != DDI_SUCCESS)
 	{

@@ -694,8 +694,10 @@ struct bio;
 
 struct nvme_namespace;
 struct nvme_consumer;
+struct nvme_request;
 
-typedef void (*nvme_cb_fn_t)(void *, const struct nvme_completion *);
+typedef void (*nvme_cb_fn_t)(void *, const struct nvme_completion *, struct nvme_request *req);
+
 typedef void (*nvme_consumer_cb_fn_t)(void *, struct nvme_namespace *);
 
 enum nvme_namespace_flags {

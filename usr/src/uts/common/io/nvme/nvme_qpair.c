@@ -113,60 +113,38 @@ nvme_qpair_process_completions(struct nvme_qpair *qpair)
 	struct nvme_request	*req;
 	struct nvme_completion	*cpl;
 	boolean_t		retry, error;
-
+	int i;
 	qpair->num_intr_handler_calls++;
 
-	while (1) 
+	for (i = 0; i < qpair->num_entries; i ++) 
 	{
 		cpl = &qpair->cpl[qpair->cq_head];
 
 		if (cpl->p != qpair->phase)
 			break;
+		printf("cpl::sqhd %d\n", cpl->sqhd);
+		printf("cpl::sqid %d\n", cpl->sqid);
 
 		tr = qpair->act_tr[cpl->cid];
 		req = tr->req;
 
-/* TODO: update for solaris */
-# if 0 
-		KASSERT(tr,
-		    ("completion queue has entries but no active trackers\n"));
-#endif
-		error = cpl->sf_sc || cpl->sf_sct;
-		retry = error && nvme_completion_check_retry(cpl);
-
-		if (error)
-		{
-			nvme_dump_completion(cpl);
-			nvme_dump_command(&tr->req->cmd);
-		}
+		if (req->cb_fn)
+			req->cb_fn(req->cb_arg, cpl, req);
 
 		qpair->act_tr[cpl->cid] = NULL;
-
-#if 0
-		KASSERT(cpl->cid == req->cmd.cid,
-		    ("cpl cid does not match cmd cid\n"));
-#endif
-
-		if (req->cb_fn && !retry)
-			req->cb_fn(req->cb_arg, cpl);
-
 		qpair->sq_head = cpl->sqhd;
 
-		if (retry)
-			nvme_qpair_submit_cmd(qpair, tr);
-		else
+
+		nvme_free_request(req);
+
+		SLIST_INSERT_HEAD(&qpair->free_tr, tr, slist);
+
+		/* there are pending request w/o tracker. handle one now */
+		if (!STAILQ_EMPTY(&qpair->queued_req))
 		{
-
-			nvme_free_request(req);
-
-			SLIST_INSERT_HEAD(&qpair->free_tr, tr, slist);
-
-			if (!STAILQ_EMPTY(&qpair->queued_req))
-			{
-				req = STAILQ_FIRST(&qpair->queued_req);
-				STAILQ_REMOVE_HEAD(&qpair->queued_req, stailq);
-				nvme_qpair_submit_request(qpair, req);
-			}
+			req = STAILQ_FIRST(&qpair->queued_req);
+			STAILQ_REMOVE_HEAD(&qpair->queued_req, stailq);
+			nvme_qpair_submit_request(qpair, req);
 		}
 
 		if (++qpair->cq_head == qpair->num_entries)
@@ -175,6 +153,7 @@ nvme_qpair_process_completions(struct nvme_qpair *qpair)
 			qpair->phase = !qpair->phase;
 		}
 
+		printf("write into doorbell! id %d\n", qpair->id);
 		nvme_mmio_write_4(qpair->ctrlr, doorbell[qpair->id].cq_hdbl,
 		    qpair->cq_head);
 	}
@@ -196,7 +175,6 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 	struct nvme_tracker	*tr;
 	uint32_t		i;
 	size_t len;
-	ddi_acc_handle_t  acc_handle;
 	ddi_dma_cookie_t  cookie;
 	uint_t  cookie_count;
 
@@ -231,8 +209,8 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 		 * MSI-X vector resource IDs start at 1, so we add one to
 		 *  the queue's vector to get the corresponding rid to use.
 		 */
-#if 0
 		qpair->rid = vector + 1;
+#if 0
 
 		qpair->res = bus_alloc_resource_any(ctrlr->dev, SYS_RES_IRQ,
 		    &qpair->rid, RF_ACTIVE);
@@ -243,17 +221,19 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 #endif
 		/* TODO: setup MSI-X here */
 	}
+	else
+		qpair->rid = vector;
 
 	qpair->num_cmds = 0;
 	qpair->num_intr_handler_calls = 0;
 	qpair->sq_head = qpair->sq_tail = qpair->cq_head = 0;
 
 	/* TODO: how to allocate physically-contig memory in solaris ? */
-	(void)ddi_dma_mem_alloc(qpair->ctrlr->dma_handle, qpair->num_entries * sizeof(struct nvme_command), &nvme_dev_attr, IOMEM_DATA_UNCACHED, DDI_DMA_SLEEP, NULL, (char **)&qpair->cmd, &len, &acc_handle);
+	(void)ddi_dma_mem_alloc(qpair->ctrlr->dma_handle, qpair->num_entries * sizeof(struct nvme_command), &nvme_dev_attr, IOMEM_DATA_UNCACHED, DDI_DMA_SLEEP, NULL, (char **)&qpair->cmd, &len, &qpair->cmd_dma_acc_handle);
 
 //	qpair->cmd = kmem_zalloc(qpair->num_entries * sizeof(struct nvme_command), KM_SLEEP);
 
-	(void)ddi_dma_mem_alloc(qpair->ctrlr->dma_handle, qpair->num_entries * sizeof(struct nvme_completion), &nvme_dev_attr, IOMEM_DATA_UNCACHED, DDI_DMA_SLEEP, NULL, (char **)&qpair->cpl, &len, &acc_handle);
+	(void)ddi_dma_mem_alloc(qpair->ctrlr->dma_handle, qpair->num_entries * sizeof(struct nvme_completion), &nvme_dev_attr, IOMEM_DATA_UNCACHED, DDI_DMA_SLEEP, NULL, (char **)&qpair->cpl, &len, &qpair->cpl_dma_acc_handle);
 
 //	qpair->cpl = kmem_zalloc(qpair->num_entries * sizeof(struct nvme_completion), KM_SLEEP);
 
@@ -326,25 +306,27 @@ nvme_admin_qpair_destroy(struct nvme_qpair *qpair)
 	 * For NVMe, you don't send delete queue commands for the admin
 	 *  queue, so we just need to unload and free the cmd and cpl memory.
 	 */
+	ddi_dma_mem_free(&qpair->cmd_dma_acc_handle);
 #if 0
 	bus_dmamap_unload(qpair->dma_tag, qpair->cmd_dma_map);
 	bus_dmamap_destroy(qpair->dma_tag, qpair->cmd_dma_map);
 #endif
-	kmem_free(qpair->cmd,
-	    qpair->num_entries * sizeof(struct nvme_command));
+//	kmem_free(qpair->cmd,
+//	    qpair->num_entries * sizeof(struct nvme_command));
 
 #if 0
 	bus_dmamap_unload(qpair->dma_tag, qpair->cpl_dma_map);
 	bus_dmamap_destroy(qpair->dma_tag, qpair->cpl_dma_map);
 #endif
-	kmem_free(qpair->cpl,
-	    qpair->num_entries * sizeof(struct nvme_completion));
+//	kmem_free(qpair->cpl,
+//	    qpair->num_entries * sizeof(struct nvme_completion));
 
+	ddi_dma_mem_free(&qpair->cpl_dma_acc_handle);
 	nvme_qpair_destroy(qpair);
 }
 
 static void
-nvme_free_cmd_ring(void *arg, const struct nvme_completion *status)
+nvme_free_cmd_ring(void *arg, const struct nvme_completion *status, struct nvme_request *req)
 {
 	struct nvme_qpair *qpair;
 
@@ -353,13 +335,13 @@ nvme_free_cmd_ring(void *arg, const struct nvme_completion *status)
 	bus_dmamap_unload(qpair->dma_tag, qpair->cmd_dma_map);
 	bus_dmamap_destroy(qpair->dma_tag, qpair->cmd_dma_map);
 #endif
-	kmem_free(qpair->cmd,
-	    qpair->num_entries * sizeof(struct nvme_command));
+	ddi_dma_mem_free(&qpair->cmd_dma_acc_handle);
+
 	qpair->cmd = NULL;
 }
 
 static void
-nvme_free_cpl_ring(void *arg, const struct nvme_completion *status)
+nvme_free_cpl_ring(void *arg, const struct nvme_completion *status, struct nvme_request *req)
 {
 	struct nvme_qpair *qpair;
 
@@ -368,8 +350,8 @@ nvme_free_cpl_ring(void *arg, const struct nvme_completion *status)
 	bus_dmamap_unload(qpair->dma_tag, qpair->cpl_dma_map);
 	bus_dmamap_destroy(qpair->dma_tag, qpair->cpl_dma_map);
 #endif
-	kmem_free(qpair->cpl,
-	    qpair->num_entries * sizeof(struct nvme_completion));
+	ddi_dma_mem_free(&qpair->cpl_dma_acc_handle);
+
 	qpair->cpl = NULL;
 }
 

@@ -42,14 +42,14 @@
 #include <sys/sysmacros.h>
 
 #include "nvme.h"
-
-
 #include "nvme_private.h"
 
 static void
-nvme_ctrlr_cb(void *arg, const struct nvme_completion *status)
+nvme_ctrlr_cb(void *arg, const struct nvme_completion *status, struct nvme_request *req)
 {
 	struct nvme_completion	*cpl = arg;
+
+	mutex_enter(&req->mutex);
 
 	/*
 	 * Copy status into the argument passed by the caller, so that
@@ -57,112 +57,11 @@ nvme_ctrlr_cb(void *arg, const struct nvme_completion *status)
 	 *  the request passed or failed.
 	 */
 	memcpy(cpl, status, sizeof(*cpl));
+
+	cv_broadcast(&req->cv);
+
+	mutex_exit(&req->mutex);
 }
-
-static int
-nvme_ctrlr_allocate_bar(struct nvme_controller *ctrlr)
-{
-	return (0);
-}
-
-#ifdef CHATHAM2
-static int
-nvme_ctrlr_allocate_chatham_bar(struct nvme_controller *ctrlr)
-{
-
-	return (0);
-}
-
-static void
-nvme_ctrlr_setup_chatham(struct nvme_controller *ctrlr)
-{
-	uint64_t reg1, reg2, reg3;
-	uint64_t temp1, temp2;
-	uint32_t temp3;
-	uint32_t use_flash_timings = 0;
-
-#if 0
-	DELAY(10000);
-
-	temp3 = chatham_read_4(ctrlr, 0x8080);
-
-	device_printf(ctrlr->dev, "Chatham version: 0x%x\n", temp3);
-
-	ctrlr->chatham_lbas = chatham_read_4(ctrlr, 0x8068) - 0x110;
-	ctrlr->chatham_size = ctrlr->chatham_lbas * 512;
-
-	device_printf(ctrlr->dev, "Chatham size: %lld\n",
-	    (long long)ctrlr->chatham_size);
-
-	reg1 = reg2 = reg3 = ctrlr->chatham_size - 1;
-
-	TUNABLE_INT_FETCH("hw.nvme.use_flash_timings", &use_flash_timings);
-	if (use_flash_timings) {
-		device_printf(ctrlr->dev, "Chatham: using flash timings\n");
-		temp1 = 0x00001b58000007d0LL;
-		temp2 = 0x000000cb00000131LL;
-	} else {
-		device_printf(ctrlr->dev, "Chatham: using DDR timings\n");
-		temp1 = temp2 = 0x0LL;
-	}
-
-	chatham_write_8(ctrlr, 0x8000, reg1);
-	chatham_write_8(ctrlr, 0x8008, reg2);
-	chatham_write_8(ctrlr, 0x8010, reg3);
-
-	chatham_write_8(ctrlr, 0x8020, temp1);
-	temp3 = chatham_read_4(ctrlr, 0x8020);
-
-	chatham_write_8(ctrlr, 0x8028, temp2);
-	temp3 = chatham_read_4(ctrlr, 0x8028);
-
-	chatham_write_8(ctrlr, 0x8030, temp1);
-	chatham_write_8(ctrlr, 0x8038, temp2);
-	chatham_write_8(ctrlr, 0x8040, temp1);
-	chatham_write_8(ctrlr, 0x8048, temp2);
-	chatham_write_8(ctrlr, 0x8050, temp1);
-	chatham_write_8(ctrlr, 0x8058, temp2);
-
-	DELAY(10000);
-#endif
-}
-
-static void
-nvme_chatham_populate_cdata(struct nvme_controller *ctrlr)
-{
-	struct nvme_controller_data *cdata;
-
-	cdata = &ctrlr->cdata;
-
-	cdata->vid = 0x8086;
-	cdata->ssvid = 0x2011;
-
-	/*
-	 * Chatham2 puts garbage data in these fields when we
-	 *  invoke IDENTIFY_CONTROLLER, so we need to re-zero
-	 *  the fields before calling bcopy().
-	 */
-	memset(cdata->sn, 0, sizeof(cdata->sn));
-	memcpy(cdata->sn, "2012", strlen("2012"));
-	memset(cdata->mn, 0, sizeof(cdata->mn));
-	memcpy(cdata->mn, "CHATHAM2", strlen("CHATHAM2"));
-	memset(cdata->fr, 0, sizeof(cdata->fr));
-	memcpy(cdata->fr, "0", strlen("0"));
-	cdata->rab = 8;
-	cdata->aerl = 3;
-	cdata->lpa.ns_smart = 1;
-	cdata->sqes.min = 6;
-	cdata->sqes.max = 6;
-	cdata->sqes.min = 4;
-	cdata->sqes.max = 4;
-	cdata->nn = 1;
-
-	/* Chatham2 doesn't support DSM command */
-	cdata->oncs.dsm = 0;
-
-	cdata->vwc.present = 1;
-}
-#endif /* CHATHAM2 */
 
 static void
 nvme_ctrlr_construct_admin_qpair(struct nvme_controller *ctrlr)
@@ -399,9 +298,11 @@ static int
 nvme_ctrlr_identify(struct nvme_controller *ctrlr)
 {
 	struct nvme_completion	cpl;
+	int ret;
 
 	nvme_ctrlr_cmd_identify_controller(ctrlr, &ctrlr->cdata,
 	    nvme_ctrlr_cb, &cpl);
+
 	if (cpl.sf_sc || cpl.sf_sct) {
 		printf("nvme_identify_controller failed!\n");
 		return (ENXIO);
@@ -537,8 +438,11 @@ nvme_ctrlr_start(void *ctrlr_arg)
 {
 	struct nvme_controller *ctrlr = ctrlr_arg;
 
+	nvme_interrupt_enable(ctrlr);
+
 	if (nvme_ctrlr_identify(ctrlr) != 0)
 		return;
+
 
 	if (nvme_ctrlr_set_num_qpairs(ctrlr) != 0)
 		return;
@@ -568,47 +472,103 @@ nvme_ctrlr_intx_task(void *arg, int pending)
 	nvme_mmio_write_4(ctrlr, intmc, 1);
 }
 
-static void
-nvme_ctrlr_intx_handler(void *arg)
+uint_t 
+nvme_ctrlr_intx_handler(char *arg, char *unused)
 {
-	struct nvme_controller *ctrlr = arg;
+	struct nvme_controller *ctrlr = (struct nvme_controller *)arg;
+
+        printf("nvme interrupt\n");
+	nvme_ctrlr_intx_task(ctrlr, 0);
 
 	nvme_mmio_write_4(ctrlr, intms, 1);
+
+	return DDI_INTR_CLAIMED;
 }
 
-static int
-nvme_ctrlr_configure_intx(struct nvme_controller *ctrlr)
+void
+nvme_interrupt_enable(struct nvme_controller *nvme)
 {
+	printf("ddi_intr_enable interrupt!\n");
+	ddi_intr_enable(nvme->intr_handle[0]);
+}
 
-	ctrlr->num_io_queues = 1;
-	ctrlr->per_cpu_io_queues = 0;
-	ctrlr->rid = 0;
-/* FIXME: replace with solaris things? (if any) */
-#if 0
-	ctrlr->res = bus_alloc_resource_any(ctrlr->dev, SYS_RES_IRQ,
-	    &ctrlr->rid, RF_SHAREABLE | RF_ACTIVE);
+void
+nvme_interrupt_disable(struct nvme_controller *nvme)
+{
+	printf("disable NVMe interrupt\n");
+	ddi_intr_disable(nvme->intr_handle[0]);
+}
 
-	if (ctrlr->res == NULL) {
-		device_printf(ctrlr->dev, "unable to allocate shared IRQ\n");
-		return (ENOMEM);
+static int 
+nvme_register_interrupt(struct nvme_controller *nvme, int intr_type)
+{
+	int count, actual;
+	int ret;
+	int avail;
+	int i;
+
+	ret = ddi_intr_get_nintrs(nvme->devinfo, intr_type, &count);
+
+	if (ret != DDI_SUCCESS)
+	{
+		printf("ddi_intr_get_nintrs failure. ret %d ._., count %d\n", ret, count);
+		return DDI_FAILURE;
 	}
 
-	bus_setup_intr(ctrlr->dev, ctrlr->res,
-	    INTR_TYPE_MISC | INTR_MPSAFE, NULL, nvme_ctrlr_intx_handler,
-	    ctrlr, &ctrlr->tag);
+	ret = ddi_intr_get_navail(nvme->devinfo, intr_type, &avail);
+	if (ret != DDI_SUCCESS)
+	{
+		printf("ddi_intr_get_navail failure, ret %d\n", ret);
+		return DDI_FAILURE;
+	}	
+	nvme->intr_size = count * sizeof(ddi_intr_handle_t);
+	nvme->intr_handle = kmem_alloc(nvme->intr_size, KM_SLEEP);
+	
+	ret = ddi_intr_alloc(nvme->devinfo, nvme->intr_handle, intr_type, 0, count, &actual, DDI_INTR_ALLOC_NORMAL);
 
-	if (ctrlr->tag == NULL) {
-		device_printf(ctrlr->dev,
-		    "unable to setup legacy interrupt handler\n");
-		return (ENOMEM);
+	if (ret != DDI_SUCCESS)
+		return ret;
+
+	printf("count = %d actual = %d\n", count, actual);
+
+	for (i = 0; i < count; i ++)
+	{
+		ret = ddi_intr_add_handler(nvme->intr_handle[i], nvme_ctrlr_intx_handler, (caddr_t)nvme, NULL);
+		if (ret != DDI_SUCCESS)
+		{
+			printf("cannot register interrupt handler!, ret %d\n", ret);
+			return DDI_FAILURE;
+		}
+	}
+	printf("%d interrupt handlers registered ok!\n", count); 
+	return DDI_SUCCESS;
+}
+/*FIXME: check status for each DDI function */
+static int
+nvme_ctrlr_configure_intx(struct nvme_controller *nvme)
+{
+	int32_t intr_type;
+
+	if (ddi_intr_get_supported_types(nvme->devinfo, &intr_type) != DDI_SUCCESS)
+	{
+		printf("cannot get supported interrupt type :(\n");
+		return -1;
 	}
 
-	TASK_INIT(&ctrlr->task, 0, nvme_ctrlr_intx_task, ctrlr);
-	ctrlr->taskqueue = taskqueue_create_fast("nvme_taskq", M_NOWAIT,
-	    taskqueue_thread_enqueue, &ctrlr->taskqueue);
-	taskqueue_start_threads(&ctrlr->taskqueue, 1, PI_NET,
-	    "%s intx taskq", device_get_nameunit(ctrlr->dev));
-#endif
+	if (intr_type & (DDI_INTR_TYPE_MSI | DDI_INTR_TYPE_MSIX))
+	{
+		printf("MSI interrupts are supported!\n");
+		nvme->msix_enabled = 1;
+		intr_type &= ~DDI_INTR_TYPE_FIXED;
+	}
+	nvme_register_interrupt(nvme, intr_type);
+	
+	/* allocate one queue par per available interrupt */
+	/* TODO: do not allocate more than number of CPUs */
+	/* otherwise, some performance degradation may occur */
+	nvme->num_io_queues = nvme->intr_size / sizeof(ddi_intr_handle_t);
+	nvme->per_cpu_io_queues = 1;
+	nvme->rid = 0;
 	return (0);
 }
 
@@ -665,25 +625,15 @@ nvme_ctrlr_construct(struct nvme_controller *ctrlr)
 {
 	union cap_lo_register	cap_lo;
 	union cap_hi_register	cap_hi;
-	int			num_vectors, per_cpu_io_queues, status = 0;
+	int status = 0;
+//	int			num_vectors, per_cpu_io_queues, status = 0;
 
 	ctrlr->is_started = B_FALSE;
 
-	status = nvme_ctrlr_allocate_bar(ctrlr);
+	printf("configure interrupts..\n");
 
-	if (status != 0)
-		return (status);
+	nvme_ctrlr_configure_intx(ctrlr);
 
-#if 0
-#ifdef CHATHAM2
-	if (pci_get_devid(dev) == CHATHAM_PCI_ID) {
-		status = nvme_ctrlr_allocate_chatham_bar(ctrlr);
-		if (status != 0)
-			return (status);
-		nvme_ctrlr_setup_chatham(ctrlr);
-	}
-#endif
-#endif
 	/*
 	 * Software emulators may set the doorbell stride to something
 	 *  other than zero, but this driver is not set up to handle that.
@@ -696,33 +646,9 @@ nvme_ctrlr_construct(struct nvme_controller *ctrlr)
 	cap_lo.raw = nvme_mmio_read_4(ctrlr, cap_lo);
 	ctrlr->ready_timeout_in_ms = cap_lo.bits.to * 500;
 
-	ctrlr->num_io_queues = 1;
-
-	ctrlr->force_intx = 0;
-
-	ctrlr->msix_enabled = 1;
-
-	if (ctrlr->force_intx) {
-		ctrlr->msix_enabled = 0;
-	}
-
 	/* One vector per IO queue, plus one vector for admin queue. */
-	num_vectors = ctrlr->num_io_queues + 1;
+//	num_vectors = ctrlr->num_io_queues + 1;
 
-#if 0
-	if (pci_msix_count(dev) < num_vectors) {
-		ctrlr->msix_enabled = 0;
-		goto intx;
-	}
-
-	if (pci_alloc_msix(dev, &num_vectors) != 0)
-		ctrlr->msix_enabled = 0;
-
-intx:
-
-	if (!ctrlr->msix_enabled)
-		nvme_ctrlr_configure_intx(ctrlr);
-#endif
 	nvme_ctrlr_construct_admin_qpair(ctrlr);
 
 	status = nvme_ctrlr_construct_io_qpairs(ctrlr);
@@ -730,15 +656,6 @@ intx:
 	if (status != 0)
 		return (status);
 
-#if 0
-	ctrlr->cdev = make_dev(&nvme_ctrlr_cdevsw, 0, UID_ROOT, GID_WHEEL, 0600,
-	    "nvme%d", device_get_unit(dev));
-
-	if (ctrlr->cdev == NULL)
-		return (ENXIO);
-
-	ctrlr->cdev->si_drv1 = (void *)ctrlr;
-#endif
 	return (0);
 }
 
@@ -746,8 +663,20 @@ void
 nvme_ctrlr_submit_admin_request(struct nvme_controller *ctrlr,
     struct nvme_request *req)
 {
+	clock_t deadline;
+	int ret;
 
+	deadline = ddi_get_lbolt() + (clock_t )drv_usectohz(3 * 1000000);
+
+	mutex_enter(&req->mutex);
 	nvme_qpair_submit_request(&ctrlr->adminq, req);
+
+	ret = cv_timedwait(&req->cv, &req->mutex, deadline);
+	if (ret < 0)
+	{
+		printf("no response from controller in 3 seconds!\n");
+		printf("TODO: %s: update me to return ETIMEDOUT\n", __func__);
+	}
 }
 
 void
