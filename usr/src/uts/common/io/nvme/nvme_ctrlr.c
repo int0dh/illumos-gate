@@ -459,38 +459,28 @@ nvme_ctrlr_start(void *ctrlr_arg)
 	ctrlr->is_started = B_TRUE;
 }
 
-/* one handler per I/O qpair */
-/* TODO: this code has to be run in DPC context vs IRQ context */
-static void
-nvme_ctrlr_intx_task(void *arg, int pending)
+/* TODO: we need one handler per io qpair. how can we get vector number? */
+static uint_t
+nvme_ctrlr_softintr_handler(char *arg, char *unused)
 {
-	struct nvme_qpair *qpair = arg;
+	struct nvme_controller *nvme = (struct nvme_controller *)arg;
 
-	if (qpair->cpl)
-		nvme_qpair_process_completions(qpair);
+	nvme_qpair_process_completions(&nvme->adminq);
 
+	if (nvme->ioq[0].cpl)
+		nvme_qpair_process_completions(&nvme->ioq[0]);
+
+	nvme_mmio_write_4(nvme, intmc, 1);
+	return DDI_INTR_CLAIMED;
 }
 
-/* NOTE: all interrupt handlers do not modify the nvme_controller (it`s arg)
-* so it seems we should not take care about synhronization stuff */
-uint_t 
+static uint_t 
 nvme_ctrlr_intx_handler(char *arg, char *unused)
 {
 	struct nvme_controller *ctrlr = (struct nvme_controller *)arg;
-	int i;
 
-	/* TODO: WE MUST SCHEDULE DPC HERE INSTEAD OF DIRECT CALL */
-	/* process admin qpair */
-	nvme_qpair_process_completions(&ctrlr->adminq);
+	(void)ddi_intr_trigger_softint(ctrlr->soft_intr_handle, NULL);
 
-	/* process IO qpairs */
-	/* TODO: we must extract the IRQ vector number to chose the properly queue */
-	for (i = 0; i < ctrlr->num_io_queues; i ++)
-		nvme_ctrlr_intx_task(&ctrlr->ioq[i], 0);
-	/* end of the code to be put into DPC context */
-
-	/* we do this code to mask the interrupt until DPC occurs.
-	* it is quite unusable until DPC implemented */ 
 	nvme_mmio_write_4(ctrlr, intms, 1);
 
 	return DDI_INTR_CLAIMED;
@@ -551,6 +541,11 @@ nvme_register_interrupts(struct nvme_controller *nvme, int intr_type)
 			return DDI_FAILURE;
 		}
 	}
+	printf("register softintr..\n");
+	(void)ddi_intr_add_softint(nvme->devinfo, &nvme->soft_intr_handle,
+		DDI_INTR_SOFTPRI_MAX, nvme_ctrlr_softintr_handler, 
+		(caddr_t)nvme);
+ 
 	printf("%d interrupt handlers registered ok!\n", count); 
 	return DDI_SUCCESS;
 }

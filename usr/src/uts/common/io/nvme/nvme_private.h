@@ -185,6 +185,8 @@ struct nvme_controller {
 	ddi_intr_handle_t	*intr_handle;
 	int			intr_size;
 
+	ddi_softint_handle_t    soft_intr_handle;
+
 	uint32_t		ready_timeout_in_ms;
 	ddi_acc_handle_t        nvme_regs_handle;
 	uint8_t			*nvme_regs_base;
