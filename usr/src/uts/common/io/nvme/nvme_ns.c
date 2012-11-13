@@ -49,6 +49,8 @@ nvme_ns_cb(void *arg, const struct nvme_completion *status, struct nvme_request 
 {
 	printf("nvme_ns_cb called\n");
 
+	memcpy(arg, status, sizeof(* status));
+
 	mutex_enter(&req->mutex);
 	cv_broadcast(&req->cv);
 	mutex_exit(&req->mutex);

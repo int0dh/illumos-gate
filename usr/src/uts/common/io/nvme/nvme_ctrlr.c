@@ -390,9 +390,10 @@ nvme_ctrlr_construct_namespaces(struct nvme_controller *ctrlr)
 	struct nvme_namespace	*ns;
 	int			i, status;
 
+	printf("ctrlr->cdata.nn is %d!\n", ctrlr->cdata.nn);
 	for (i = 0; i < ctrlr->cdata.nn; i++) {
 		ns = &ctrlr->ns[i];
-		status = nvme_ns_construct(ns, i+1, ctrlr);
+		status = nvme_ns_construct(ns, i, ctrlr);
 		if (status != 0)
 			return (status);
 	}
@@ -575,6 +576,7 @@ nvme_ctrlr_configure_intx(struct nvme_controller *nvme)
 	/* always use one I/O qpair per CPU for best performance */
 	nvme->per_cpu_io_queues = 1;
 	nvme->rid = 0;
+	nvme->msix_enabled = 0;
 
 	if (ddi_intr_get_supported_types(nvme->devinfo, &intr_type) != DDI_SUCCESS)
 	{

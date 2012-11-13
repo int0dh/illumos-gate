@@ -204,7 +204,7 @@ nvme_blk_read(void *arg, bd_xfer_t *xfer)
 
 		cmd = &req->cmd;
 		cmd->opc = NVME_OPC_READ;
-		cmd->nsid = 0;
+		cmd->nsid = ns->id; 
 		lba = xfer->x_blkno / nvme_ns_get_sector_size(ns);
 
 		*(uint64_t *)&cmd->cdw10 = lba;
@@ -258,7 +258,7 @@ nvme_blk_write(void *arg, bd_xfer_t *xfer)
 
 		cmd = &req->cmd;
 		cmd->opc = NVME_OPC_WRITE;
-		cmd->nsid = 0;
+		cmd->nsid = ns->id;
 		lba = xfer->x_blkno / nvme_ns_get_sector_size(ns);
 
 		*(uint64_t *)&cmd->cdw10 = lba;
@@ -277,10 +277,10 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	int ret = DDI_SUCCESS;
 	int instance, i;
 	struct nvme_controller *nvme = NULL;	
+	size_t nvme_len = sizeof(*nvme);
 
-	ddi_acc_handle_t pci;
-	uint16_t vendid;
-	uint16_t devid;
+	ddi_acc_handle_t dmaac;
+	ddi_dma_handle_t dmah;
 
 	instance = ddi_get_instance(devinfo);
 	printf("nvme_attach is called!, rev 0.01\n");
@@ -298,17 +298,14 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 			dev_err(devinfo, CE_WARN, "unknown cmd");
 	
 	}
-	if (pci_config_setup(devinfo, &pci) != DDI_SUCCESS)
-	{
-		printf("cannot setup pci config space!\n");
-		return DDI_FAILURE;
-	}
-	vendid = pci_config_get16(pci, 0);
-	devid = pci_config_get16(pci, 2);
+	/* allocate softc structure in the DMAble memory */
+	(void)ddi_dma_alloc_handle(devinfo, &nvme_req_dma_attr, DDI_DMA_SLEEP, NULL, &dmah);
+	ddi_dma_mem_alloc(dmah, sizeof(* nvme), &nvme_dev_attr, IOMEM_DATA_UNCACHED, DDI_DMA_SLEEP, NULL, (char **)&nvme, &nvme_len, &dmaac);
 
-	printf("device id 0x%08x vendor id 0x%08x\n", vendid, devid); 
-	nvme = kmem_zalloc(sizeof(*nvme), KM_SLEEP);
+	printf("nvme softc at %p\n", nvme);		
 	ddi_set_driver_private(devinfo, nvme);	
+
+	nvme->dma_handle = dmah;
 
 	if (ddi_regs_map_setup(devinfo, 1, (caddr_t *)&nvme->nvme_regs_base,
 		0, 0, &nvme_dev_attr, &nvme->nvme_regs_handle) != DDI_SUCCESS)
@@ -321,13 +318,15 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 
 	nvme->devinfo = devinfo;
 
+#if 0
 	/* allocate DMA handle */
 	if (ddi_dma_alloc_handle(devinfo, &nvme_req_dma_attr, DDI_DMA_SLEEP, NULL, &nvme->dma_handle) != DDI_SUCCESS)
 	{
 		/* FIXME: release resources */
 		printf("cannot allocate DMA handle!\n");
 		return DDI_FAILURE;
-	} 	
+	}
+#endif 	
 	ret = nvme_ctrlr_construct(nvme);
 	if (ret != 0)
 	{
@@ -480,8 +479,6 @@ nvme_payload_map(struct nvme_tracker *tr, void *payload, uint32_t payload_size)
 (struct as *)NULL, (caddr_t)payload, payload_size, DDI_DMA_RDWR | DDI_DMA_CONSISTENT, DDI_DMA_DONTWAIT, 0, &cookie, &cookie_count);
 
 	tr->req->cmd.prp1 = cookie.dmac_laddress;
-
-	nvme_qpair_submit_cmd(tr->qpair, tr);
 }
 #if 0
 #include "nvme_private.h"
