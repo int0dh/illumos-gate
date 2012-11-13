@@ -114,18 +114,27 @@ nvme_qpair_process_completions(struct nvme_qpair *qpair)
 	struct nvme_completion	*cpl;
 	boolean_t		retry, error;
 	int i;
+
 	qpair->num_intr_handler_calls++;
 
 	for (i = 0; i < qpair->num_entries; i ++) 
 	{
+//		cpl = &qpair->cpl[i];
 		cpl = &qpair->cpl[qpair->cq_head];
 
 		if (cpl->p != qpair->phase)
 			break;
-		printf("cpl::sqhd %d\n", cpl->sqhd);
-		printf("cpl::sqid %d\n", cpl->sqid);
 
+		if (cpl->cid > NVME_ADMIN_ENTRIES)
+		{
+			printf("bad CID!! %d\n", cpl->cid);
+			continue;
+		}
 		tr = qpair->act_tr[cpl->cid];
+		if (tr == NULL)
+		{
+			continue;
+		}
 		req = tr->req;
 
 		if (req->cb_fn)
@@ -135,25 +144,26 @@ nvme_qpair_process_completions(struct nvme_qpair *qpair)
 		qpair->sq_head = cpl->sqhd;
 
 
-		nvme_free_request(req);
+//		printf("free request..\n");
+//		nvme_free_request(qpair, req);
 
+		/* release the tracker */
 		SLIST_INSERT_HEAD(&qpair->free_tr, tr, slist);
 
 		/* there are pending request w/o tracker. handle one now */
+#if 0
 		if (!STAILQ_EMPTY(&qpair->queued_req))
 		{
 			req = STAILQ_FIRST(&qpair->queued_req);
 			STAILQ_REMOVE_HEAD(&qpair->queued_req, stailq);
 			nvme_qpair_submit_request(qpair, req);
 		}
-
+#endif
 		if (++qpair->cq_head == qpair->num_entries)
 		{
 			qpair->cq_head = 0;
 			qpair->phase = !qpair->phase;
 		}
-
-		printf("write into doorbell! id %d\n", qpair->id);
 		nvme_mmio_write_4(qpair->ctrlr, doorbell[qpair->id].cq_hdbl,
 		    qpair->cq_head);
 	}
@@ -177,6 +187,7 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 	size_t len;
 	ddi_dma_cookie_t  cookie;
 	uint_t  cookie_count;
+	struct nvme_request *rq;
 
 	qpair->id = id;
 	qpair->vector = vector;
@@ -280,6 +291,14 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 	}
 
 	qpair->act_tr = kmem_zalloc(sizeof(struct nvme_tracker *) * qpair->num_entries, KM_NOSLEEP);
+
+	rq = kmem_zalloc(sizeof(struct nvme_request) * qpair->num_entries, KM_NOSLEEP);
+	TAILQ_INIT(&qpair->request_queue);
+	for (i = 0; i < qpair->num_entries; i ++)
+	{
+		struct nvme_request *r = &rq[i];
+		TAILQ_INSERT_TAIL(&qpair->request_queue, r, rq_next);
+	}	
 }
 
 static void
@@ -396,6 +415,7 @@ nvme_qpair_submit_cmd(struct nvme_qpair *qpair, struct nvme_tracker *tr)
 	req->cmd.cid = tr->cid;
 	qpair->act_tr[tr->cid] = tr;
 
+	printf("%s: cmd.cid is %d\n", __func__, tr->cid);
 //	callout_reset(&tr->timer, NVME_TIMEOUT_IN_SEC * hz, nvme_timeout, tr);
 
 	/* Copy the command from the tracker to the submission queue. */
@@ -419,6 +439,8 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_request *req)
 
 //	mtx_lock(&qpair->lock);
 
+	lock_set(&qpair->lock);
+
 	tr = SLIST_FIRST(&qpair->free_tr);
 
 	if (tr == NULL) {
@@ -428,7 +450,8 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_request *req)
 		 *  via a command completion.
 		 */
 		STAILQ_INSERT_TAIL(&qpair->queued_req, req, stailq);
-//		goto ret;
+		lock_clear(&qpair->lock);
+		printf("no available tracker!\n");
 		return;
 	}
 
@@ -443,14 +466,8 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_request *req)
 			nvme_payload_map(tr, req->payload, req->payload_size);
 
 		nvme_qpair_submit_cmd(tr->qpair, tr);
-
-	/* dirty check */
-	printf("sleep..\n");
-	DELAY(1000);
-	printf("tr->qpair->ctrlr->cdata.sn[0] 0x%02x [1] 0x%02x\n",
-		tr->qpair->ctrlr->cdata.sn[0], tr->qpair->ctrlr->cdata.sn[1]);
-		printf("vid 0x%04x\n", tr->qpair->ctrlr->cdata.vid);
 	}
+	lock_clear(&qpair->lock);
 	/* TODO: reimplement me! */
 #if 0
 	if (req->uio == NULL) {

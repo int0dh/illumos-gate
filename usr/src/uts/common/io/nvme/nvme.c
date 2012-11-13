@@ -167,7 +167,7 @@ nvme_dump_completion(struct nvme_completion *cpl)
 static int
 nvme_blk_read(void *arg, bd_xfer_t *xfer)
 {
-	struct nvme_controller *nvme = (struct nvme_controller *)arg;
+	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
 	struct nvme_request *req;
 	struct nvme_command *cmd;
 
@@ -180,10 +180,10 @@ nvme_blk_read(void *arg, bd_xfer_t *xfer)
 		printf("%s: polling mode is not supported\n", __FUNCTION__);
 		return EINVAL;
 	}
-	if ((xfer->x_blkno + xfer->x_nblks) > nvme->ns[0].data.nsze)	 
+	if ((xfer->x_blkno + xfer->x_nblks) > nvme_ns_get_size(ns))	 
 		return EINVAL;
 
-	data_len = xfer->x_nblks * nvme_ns_get_sector_size(&nvme->ns[0]);
+	data_len = xfer->x_nblks * nvme_ns_get_sector_size(ns);
 
 	npages = (data_len) / PAGESIZE;
 	/* shall we setup some DMA ? */
@@ -200,17 +200,17 @@ nvme_blk_read(void *arg, bd_xfer_t *xfer)
 		int transfer_size = min(PAGESIZE, data_len);
 		uint64_t lba;
 
-		req = nvme_allocate_request(data_start, transfer_size, NULL, NULL);
+		req = nvme_allocate_request(&ns->ctrlr->ioq[0], data_start, transfer_size, NULL, NULL);
 
 		cmd = &req->cmd;
 		cmd->opc = NVME_OPC_READ;
 		cmd->nsid = 0;
-		lba = xfer->x_blkno / nvme_ns_get_sector_size(0);
+		lba = xfer->x_blkno / nvme_ns_get_sector_size(ns);
 
 		*(uint64_t *)&cmd->cdw10 = lba;
 		cmd->cdw12 = transfer_size;
 
-		nvme_ctrlr_submit_io_request(nvme, req);
+		nvme_ctrlr_submit_io_request(ns->ctrlr, req);
 
 		data_len -= transfer_size; 
 	}	
@@ -221,7 +221,7 @@ nvme_blk_read(void *arg, bd_xfer_t *xfer)
 static int
 nvme_blk_write(void *arg, bd_xfer_t *xfer)
 {
-	struct nvme_controller *nvme = (struct nvme_controller *)arg;
+	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
 	struct nvme_request *req;
 	struct nvme_command *cmd;
 
@@ -234,10 +234,10 @@ nvme_blk_write(void *arg, bd_xfer_t *xfer)
 		printf("%s: polling mode is not supported\n", __FUNCTION__);
 		return EINVAL;
 	}
-	if ((xfer->x_blkno + xfer->x_nblks) > nvme->ns[0].data.nsze)	 
+	if ((xfer->x_blkno + xfer->x_nblks) > ns->data.nsze)	 
 		return EINVAL;
 
-	data_len = xfer->x_nblks * nvme_ns_get_sector_size(&nvme->ns[0]);
+	data_len = xfer->x_nblks * nvme_ns_get_sector_size(ns);
 
 	npages = (data_len) / PAGESIZE;
 	/* shall we setup some DMA ? */
@@ -254,21 +254,20 @@ nvme_blk_write(void *arg, bd_xfer_t *xfer)
 		int transfer_size = min(PAGESIZE, data_len);
 		uint64_t lba;
 
-		req = nvme_allocate_request(data_start, transfer_size, NULL, NULL);
+		req = nvme_allocate_request(&ns->ctrlr->ioq[0], data_start, transfer_size, NULL, NULL);
 
 		cmd = &req->cmd;
 		cmd->opc = NVME_OPC_WRITE;
 		cmd->nsid = 0;
-		lba = xfer->x_blkno / nvme_ns_get_sector_size(0);
+		lba = xfer->x_blkno / nvme_ns_get_sector_size(ns);
 
 		*(uint64_t *)&cmd->cdw10 = lba;
 		cmd->cdw12 = transfer_size;
 
-		nvme_ctrlr_submit_io_request(nvme, req);
+		nvme_ctrlr_submit_io_request(ns->ctrlr, req);
 
 		data_len -= transfer_size; 
 	}	
-	printf("%s: called!\n", __FUNCTION__);
 	return DDI_SUCCESS; 
 }
 
@@ -276,7 +275,7 @@ static int
 nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 {
 	int ret = DDI_SUCCESS;
-	int instance;
+	int instance, i;
 	struct nvme_controller *nvme = NULL;	
 
 	ddi_acc_handle_t pci;
@@ -350,13 +349,18 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	}
 	nvme_ctrlr_start(nvme);
 
-	nvme->bd_handle = bd_alloc_handle(nvme, &nvme_blk_ops, &nvme_bd_dma_attr, KM_SLEEP);
-
-	ret = bd_attach_handle(devinfo, nvme->bd_handle);
-	if (ret != DDI_SUCCESS)
+	for (i = 0; i < nvme->cdata.nn; i ++)
 	{
-		/* FIXME: shall we free some resources ? */
-		printf("failed to attach blkdev :((\n");
+		struct nvme_namespace *ns = &nvme->ns[i];
+
+		ns->bd_handle = bd_alloc_handle(ns, &nvme_blk_ops, &nvme_bd_dma_attr, KM_SLEEP);
+
+		ret = bd_attach_handle(devinfo, ns->bd_handle);
+		if (ret != DDI_SUCCESS)
+		{
+			/* FIXME: shall we free some resources ? */
+			printf("failed to attach blkdev :((\n");
+		}
 	}
 exit:
 	return ret;
@@ -366,13 +370,18 @@ static int
 nvme_detach(dev_info_t *devinfo, ddi_detach_cmd_t cmd)
 {
 	struct nvme_controller *nvme = NULL;
-
+	int i = 0;
 	nvme = (struct nvme_controller *)ddi_get_driver_private(devinfo);
 
-	if (bd_detach_handle(nvme->bd_handle) != DDI_SUCCESS)
+	for (i = 0; i < nvme->cdata.nn; i ++)
 	{
-		printf("cannot detach blkdev handle :(\n");
-		return DDI_FAILURE;
+		struct nvme_namespace *ns = &nvme->ns[i];
+
+		if (bd_detach_handle(ns->bd_handle) != DDI_SUCCESS)
+		{
+			printf("cannot detach blkdev handle :(\n");
+			return DDI_FAILURE;
+		}
 	}
 	return DDI_SUCCESS;
 }
@@ -392,30 +401,28 @@ nvme_blk_flush(void *arg, bd_xfer_t *xfer)
 static void
 nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
 {
-	struct nvme_controller *nvme = (struct nvme_controller *)arg;
+	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
 
 	printf("%s: called!\n", __FUNCTION__);
 
-	memset(drive, 0, sizeof(* drive));
 	/* FIXME!! */
-	drive->d_maxxfer = nvme->max_xfer_size;
+	drive->d_maxxfer = nvme_ns_get_max_io_xfer_size(ns);
 	drive->d_qsize = 2;
 	drive->d_removable = B_FALSE;
 	drive->d_hotpluggable = B_FALSE;
 	drive->d_target = 0;
-	drive->d_lun = 0;
+	drive->d_lun = ((char *)ns - (char *)&ns->ctrlr->ns[0]) / sizeof(struct nvme_namespace);
 }
 
 static int
 nvme_blk_mediainfo(void *arg, bd_media_t *media)
 {
-	struct nvme_controller *nvme = (struct nvme_controller *)arg;	
+	struct nvme_namespace *ns = (struct nvme_namespace *)arg;	
 
 	printf("%s: called!\n", __FUNCTION__);
-	media->m_nblks = nvme_ns_get_num_sectors(&nvme->ns[0]); // FIXME
-	media->m_blksize = nvme_ns_get_sector_size(&nvme->ns[0]);
+	media->m_nblks = nvme_ns_get_num_sectors(ns); 
+	media->m_blksize = nvme_ns_get_sector_size(ns);
 	media->m_readonly = B_FALSE;
-
 	return 0;
 }
 

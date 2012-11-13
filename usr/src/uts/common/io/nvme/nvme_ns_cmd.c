@@ -36,7 +36,7 @@ nvme_ns_cmd_read(struct nvme_namespace *ns, void *payload, uint64_t lba,
 	struct nvme_request	*req;
 	struct nvme_command	*cmd;
 
-	req = nvme_allocate_request(payload, lba_count*512, cb_fn, cb_arg);
+	req = nvme_allocate_request(&ns->ctrlr->ioq[0], payload, lba_count*512, cb_fn, cb_arg);
 
 	if (req == NULL)
 		return (ENOMEM);
@@ -60,7 +60,7 @@ nvme_ns_cmd_write(struct nvme_namespace *ns, void *payload, uint64_t lba,
 	struct nvme_request	*req;
 	struct nvme_command	*cmd;
 
-	req = nvme_allocate_request(payload, lba_count*512, cb_fn, cb_arg);
+	req = nvme_allocate_request(&ns->ctrlr->ioq[0], payload, lba_count*512, cb_fn, cb_arg);
 
 	if (req == NULL)
 		return (ENOMEM);
@@ -85,7 +85,7 @@ nvme_ns_cmd_deallocate(struct nvme_namespace *ns, void *payload,
 	struct nvme_request	*req;
 	struct nvme_command	*cmd;
 
-	req = nvme_allocate_request(payload,
+	req = nvme_allocate_request(&ns->ctrlr->ioq[0], payload,
 	    num_ranges * sizeof(struct nvme_dsm_range), cb_fn, cb_arg);
 
 	if (req == NULL)
@@ -110,7 +110,7 @@ nvme_ns_cmd_flush(struct nvme_namespace *ns, nvme_cb_fn_t cb_fn, void *cb_arg)
 	struct nvme_request	*req;
 	struct nvme_command	*cmd;
 
-	req = nvme_allocate_request(NULL, 0, cb_fn, cb_arg);
+	req = nvme_allocate_request(&ns->ctrlr->ioq[0], NULL, 0, cb_fn, cb_arg);
 
 	if (req == NULL)
 		return (ENOMEM);

@@ -34,11 +34,6 @@
 
 #define CHATHAM2
 
-#ifdef CHATHAM2
-#define CHATHAM_PCI_ID		0x20118086
-#define CHATHAM_CONTROL_BAR	0
-#endif
-
 #define IDT_PCI_ID		0x80d0111d
 
 #define NVME_MAX_PRP_LIST_ENTRIES	(32)
@@ -102,6 +97,7 @@ struct nvme_request {
 	nvme_cb_fn_t			cb_fn;
 	void				*cb_arg;
 	STAILQ_ENTRY(nvme_request)	stailq;
+	TAILQ_ENTRY(nvme_request)	rq_next; /* next in request queue */
 };
 
 struct nvme_tracker {
@@ -122,6 +118,7 @@ struct nvme_qpair {
 	struct nvme_controller	*ctrlr;
 	ddi_acc_handle_t	cmd_dma_acc_handle;
 	ddi_acc_handle_t	cpl_dma_acc_handle;
+	ddi_softint_handle_t  *soft_intr_handle;
 
 	uint32_t		id;
 	uint32_t		phase;
@@ -147,6 +144,7 @@ struct nvme_qpair {
 	struct nvme_completion	*cpl;
 
 	ddi_dma_handle_t	dma_tag;
+
 //	bus_dma_tag_t		dma_tag;
 
 //	bus_dmamap_t		cmd_dma_map;
@@ -158,16 +156,18 @@ struct nvme_qpair {
 	SLIST_HEAD(, nvme_tracker)	free_tr;
 	STAILQ_HEAD(, nvme_request)	queued_req;
 
+	TAILQ_HEAD(, nvme_request)	request_queue;
 	struct nvme_tracker	**act_tr;
 
-	kmutex_t		lock;
-
+	lock_t		lock;
+	
 } __aligned(CACHE_LINE_SIZE);
 
 struct nvme_namespace {
 
 	struct nvme_controller		*ctrlr;
 	struct nvme_namespace_data	data;
+	bd_handle_t			bd_handle;
 	uint16_t			id;
 	uint16_t			flags;
 };
@@ -183,24 +183,12 @@ struct nvme_controller {
 	int			nvme_nbloks;
 
 	ddi_intr_handle_t	*intr_handle;
+	ddi_softint_handle_t    *soft_intr_handle;
 	int			intr_size;
-
-	ddi_softint_handle_t    soft_intr_handle;
 
 	uint32_t		ready_timeout_in_ms;
 	ddi_acc_handle_t        nvme_regs_handle;
 	uint8_t			*nvme_regs_base;
-	bd_handle_t		bd_handle;
-	boolean_t		is_chatam2;
-	int			resource_id;
-//	struct resource		*resource;
-
-#ifdef CHATHAM2
-//	bus_space_tag_t		chatham_bus_tag;
-//	bus_space_handle_t	chatham_bus_handle;
-	int			chatham_resource_id;
-//	struct resource		*chatham_resource;
-#endif
 
 	uint32_t		msix_enabled;
 	uint32_t		force_intx;
@@ -243,11 +231,6 @@ struct nvme_controller {
 //	struct cdev			*cdev;
 
 	boolean_t			is_started;
-
-#ifdef CHATHAM2
-	uint64_t		chatham_size;
-	uint64_t		chatham_lbas;
-#endif
 };
 
 #define nvme_mmio_offsetof(reg)						       \
@@ -371,14 +354,25 @@ nvme_single_map(void *arg, bus_dma_segment_t *seg, int nseg, int error)
 #endif
 
 static __inline struct nvme_request *
-nvme_allocate_request(void *payload, uint32_t payload_size, nvme_cb_fn_t cb_fn, 
-		      void *cb_arg)
+nvme_allocate_request(struct nvme_qpair *q, void *payload, uint32_t payload_size, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
 	struct nvme_request *req = NULL;
 
+#if 0
 	req = kmem_zalloc(sizeof(* req), KM_NOSLEEP);
 	if (req == NULL)
 		return (NULL);
+#endif
+	lock_set(&q->lock);
+
+	if (TAILQ_EMPTY(&q->request_queue))
+	{
+		lock_clear(&q->lock);
+		return NULL;
+	}
+	req = TAILQ_FIRST(&q->request_queue);
+	TAILQ_REMOVE(&q->request_queue, req, rq_next);
+	lock_clear(&q->lock);
 
 	req->payload = payload;
 	req->payload_size = payload_size;
@@ -393,11 +387,14 @@ nvme_allocate_request(void *payload, uint32_t payload_size, nvme_cb_fn_t cb_fn,
 }
 
 static __inline void
-nvme_free_request(struct nvme_request *req)
+nvme_free_request(struct nvme_qpair *q, struct nvme_request *req)
 {
+
+	lock_set(&q->lock);
+	TAILQ_INSERT_HEAD(&q->request_queue, req, rq_next);
+	lock_clear(&q->lock);
+
 	mutex_destroy(&req->mutex);
 	cv_destroy(&req->cv);
-
-	kmem_free(req, sizeof(*req));
 }
 #endif /* __NVME_PRIVATE_H__ */
