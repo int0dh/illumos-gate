@@ -469,10 +469,6 @@ nvme_ctrlr_softintr_handler(char *arg, char *unused)
 
 	nvme_qpair_process_completions(qpair);
 
-#if 0
-	if (nvme->ioq[0].cpl)
-		nvme_qpair_process_completions(&nvme->ioq[0]);
-#endif
 	nvme_mmio_write_4(qpair->ctrlr, intmc, 1);
 	return DDI_INTR_CLAIMED;
 }
@@ -484,7 +480,7 @@ nvme_ctrlr_intx_handler(char *arg, char *unused)
 
 	(void)ddi_intr_trigger_softint(*qpair->soft_intr_handle, NULL);
 
-	nvme_mmio_write_4(qpair->ctrlr, intms, 0xffffffff);
+	nvme_mmio_write_4(qpair->ctrlr, intms, 1);
 
 	return DDI_INTR_CLAIMED;
 }

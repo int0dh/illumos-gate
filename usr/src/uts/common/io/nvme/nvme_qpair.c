@@ -137,6 +137,7 @@ nvme_qpair_process_completions(struct nvme_qpair *qpair)
 		}
 		req = tr->req;
 
+		printf("soft interrupt: callback at 0x%p\n", req->cb_fn);
 		if (req->cb_fn)
 			req->cb_fn(req->cb_arg, cpl, req);
 
@@ -169,14 +170,6 @@ nvme_qpair_process_completions(struct nvme_qpair *qpair)
 	}
 }
 
-static void
-nvme_qpair_msix_handler(void *arg)
-{
-	struct nvme_qpair *qpair = arg;
-
-	nvme_qpair_process_completions(qpair);
-}
-
 void
 nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
     uint16_t vector, uint32_t num_entries, uint32_t num_trackers,
@@ -192,15 +185,7 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 	qpair->id = id;
 	qpair->vector = vector;
 	qpair->num_entries = num_entries;
-#if 0
-	/*
-	 * Chatham prototype board starts having issues at higher queue
-	 *  depths.  So use a conservative estimate here of no more than 64
-	 *  outstanding I/O per queue at any one point.
-	 */
-	if (pci_get_devid(ctrlr->dev) == CHATHAM_PCI_ID)
-		num_trackers = min(num_trackers, 64);
-#endif
+
 	qpair->num_trackers = num_trackers;
 	qpair->max_xfer_size = max_xfer_size;
 	qpair->ctrlr = ctrlr;
@@ -221,16 +206,6 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 		 *  the queue's vector to get the corresponding rid to use.
 		 */
 		qpair->rid = vector + 1;
-#if 0
-
-		qpair->res = bus_alloc_resource_any(ctrlr->dev, SYS_RES_IRQ,
-		    &qpair->rid, RF_ACTIVE);
-
-		bus_setup_intr(ctrlr->dev, qpair->res,
-		    INTR_TYPE_MISC | INTR_MPSAFE, NULL,
-		    nvme_qpair_msix_handler, qpair, &qpair->tag);
-#endif
-		/* TODO: setup MSI-X here */
 	}
 	else
 		qpair->rid = vector;
@@ -308,7 +283,7 @@ nvme_qpair_destroy(struct nvme_qpair *qpair)
 
 
 	if (qpair->act_tr)
-		kmem_free(qpair->act_tr, sizeof(* tr));
+		kmem_free(qpair->act_tr, sizeof(tr) * qpair->num_entries);
 
 	while (!SLIST_EMPTY(&qpair->free_tr)) {
 		tr = SLIST_FIRST(&qpair->free_tr);
