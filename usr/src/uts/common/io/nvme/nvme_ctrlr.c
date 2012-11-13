@@ -234,10 +234,8 @@ nvme_ctrlr_enable(struct nvme_controller *ctrlr)
 			return (nvme_ctrlr_wait_for_ready(ctrlr));
 	}
 
-	printf("%s: asq val %lld\n", __FUNCTION__, (long long int)ctrlr->adminq.cmd_bus_addr);
 	nvme_mmio_write_8(ctrlr, asq, ctrlr->adminq.cmd_bus_addr);
 	DELAY(5000);
-	printf("%s: acq val %lld\n", __FUNCTION__, (long long int)ctrlr->adminq.cpl_bus_addr);
 	nvme_mmio_write_8(ctrlr, acq, ctrlr->adminq.cpl_bus_addr);
 	DELAY(5000);
 
@@ -245,7 +243,6 @@ nvme_ctrlr_enable(struct nvme_controller *ctrlr)
 	/* acqs and asqs are 0-based. */
 	aqa.bits.acqs = ctrlr->adminq.num_entries-1;
 	aqa.bits.asqs = ctrlr->adminq.num_entries-1;
-	printf("%s: aqa 0x%08x\n", __FUNCTION__, aqa.raw);
 	nvme_mmio_write_4(ctrlr, aqa, aqa.raw);
 	DELAY(5000);
 
@@ -259,7 +256,6 @@ nvme_ctrlr_enable(struct nvme_controller *ctrlr)
 	/* This evaluates to 0, which is according to spec. */
 	cc.bits.mps = (PAGESIZE >> 13);
 
-	printf("%s: write into CC, val 0x%08x\n", __FUNCTION__, cc.raw);
 	nvme_mmio_write_4(ctrlr, cc, cc.raw);
 	DELAY(5000);
 
@@ -311,6 +307,8 @@ nvme_ctrlr_identify(struct nvme_controller *ctrlr)
 		printf("nvme_identify_controller failed!\n");
 		return (ENXIO);
 	}
+	printf("nvme->cdata.vid = %04x\n", ctrlr->cdata.vid);
+
 	printf("nvme_identify_controller success!\n");
 	return (DDI_SUCCESS);
 }
@@ -396,6 +394,7 @@ nvme_ctrlr_construct_namespaces(struct nvme_controller *ctrlr)
 		status = nvme_ns_construct(ns, i, ctrlr);
 		if (status != 0)
 			return (status);
+		printf("namespace %d exist!\n", i);
 	}
 
 	return (0);
@@ -435,7 +434,7 @@ nvme_ctrlr_configure_int_coalescing(struct nvme_controller *ctrlr)
 	/* todo: do something nice here */
 }
 
-void
+int
 nvme_ctrlr_start(void *ctrlr_arg)
 {
 	struct nvme_controller *ctrlr = ctrlr_arg;
@@ -443,22 +442,23 @@ nvme_ctrlr_start(void *ctrlr_arg)
 	nvme_interrupt_enable(ctrlr);
 
 	if (nvme_ctrlr_identify(ctrlr) != 0)
-		return;
+		return (ENXIO);
 
 
 	if (nvme_ctrlr_set_num_qpairs(ctrlr) != 0)
-		return;
+		return (ENXIO);
 
 	if (nvme_ctrlr_create_qpairs(ctrlr) != 0)
-		return;
+		return (ENXIO);
 
 	if (nvme_ctrlr_construct_namespaces(ctrlr) != 0)
-		return;
+		return (ENXIO);
 
 	nvme_ctrlr_configure_aer(ctrlr);
 	nvme_ctrlr_configure_int_coalescing(ctrlr);
 
 	ctrlr->is_started = B_TRUE;
+	return 0;
 }
 
 /* TODO: we need one handler per io qpair. how can we get vector number? */
@@ -704,9 +704,11 @@ nvme_ctrlr_submit_admin_request(struct nvme_controller *ctrlr,
 		printf("no response from controller in 3 seconds!\n");
 		printf("TODO: %s: update me to return ETIMEDOUT\n", __func__);
 	}
+	/* FIXME: we also have to release tracker and stuff when timeout expires */
 	nvme_free_request(&ctrlr->adminq, req);
 }
 
+/* TODO: update me to chose IO qpair */
 void
 nvme_ctrlr_submit_io_request(struct nvme_controller *ctrlr,
     struct nvme_request *req)

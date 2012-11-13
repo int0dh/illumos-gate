@@ -318,15 +318,6 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 
 	nvme->devinfo = devinfo;
 
-#if 0
-	/* allocate DMA handle */
-	if (ddi_dma_alloc_handle(devinfo, &nvme_req_dma_attr, DDI_DMA_SLEEP, NULL, &nvme->dma_handle) != DDI_SUCCESS)
-	{
-		/* FIXME: release resources */
-		printf("cannot allocate DMA handle!\n");
-		return DDI_FAILURE;
-	}
-#endif 	
 	ret = nvme_ctrlr_construct(nvme);
 	if (ret != 0)
 	{
@@ -346,7 +337,12 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 		printf("cannot reset controller!\n");
 		return ENXIO;
 	}
-	nvme_ctrlr_start(nvme);
+	if (nvme_ctrlr_start(nvme) != 0)
+	{
+		printf("cannot start controller!\n");
+		return ENXIO;
+	}
+	printf("%d LUNs. allocate blkdev handle\n", nvme->cdata.nn);
 
 	for (i = 0; i < nvme->cdata.nn; i ++)
 	{

@@ -313,7 +313,7 @@ void	nvme_payload_map(struct nvme_tracker *tr, void *addr, uint32_t len);
 //int	nvme_ctrlr_construct(struct nvme_controller *ctrlr, device_t dev);
 int	nvme_ctrlr_reset(struct nvme_controller *ctrlr);
 /* ctrlr defined as void * to allow use with config_intrhook. */
-void	nvme_ctrlr_start(void *ctrlr_arg);
+int	nvme_ctrlr_start(void *ctrlr_arg);
 void	nvme_ctrlr_submit_admin_request(struct nvme_controller *ctrlr,
 					struct nvme_request *req);
 void	nvme_ctrlr_submit_io_request(struct nvme_controller *ctrlr,
