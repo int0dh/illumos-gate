@@ -110,7 +110,7 @@ static ddi_dma_attr_t nvme_req_dma_attr = {
         0,                              /* dma_attr_addr_lo     */
         0xFFFFFFFFFFFFFFFFull,          /* dma_attr_addr_hi     */
         0x00000000FFFFFFFFull,          /* dma_attr_count_max   */
-        16,                             /* dma_attr_align       */
+        4096,		                     /* dma_attr_align       */
         1,                              /* dma_attr_burstsizes  */
         1,                              /* dma_attr_minxfer     */
         0xFFFFFFFFull,                  /* dma_attr_maxxfer     */
@@ -175,6 +175,9 @@ nvme_blk_read(void *arg, bd_xfer_t *xfer)
 	caddr_t data_start;
 	int data_len, i;
 
+	printf("block read called!\n");
+	return -1;
+
 	if (xfer->x_flags & BD_XFER_POLL)
 	{
 		printf("%s: polling mode is not supported\n", __FUNCTION__);
@@ -228,6 +231,9 @@ nvme_blk_write(void *arg, bd_xfer_t *xfer)
 	int npages = 0;
 	caddr_t data_start;
 	int data_len, i;
+
+	printf("blk write called!\n");
+	return -1;
 
 	if (xfer->x_flags & BD_XFER_POLL)
 	{
@@ -348,7 +354,9 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	{
 		struct nvme_namespace *ns = &nvme->ns[i];
 
-		ns->bd_handle = bd_alloc_handle(ns, &nvme_blk_ops, &nvme_bd_dma_attr, KM_SLEEP);
+		printf("NS at 0x%p\n", ns);
+
+		ns->bd_handle = bd_alloc_handle(ns, &nvme_blk_ops, &nvme_req_dma_attr, KM_SLEEP);
 
 		ret = bd_attach_handle(devinfo, ns->bd_handle);
 		if (ret != DDI_SUCCESS)
@@ -407,6 +415,11 @@ nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
 	drive->d_hotpluggable = B_FALSE;
 	drive->d_target = 0;
 	drive->d_lun = ((char *)ns - (char *)&ns->ctrlr->ns[0]) / sizeof(struct nvme_namespace);
+
+	/* align maxxfer down to page size */
+	drive->d_maxxfer = (drive->d_maxxfer / PAGESIZE) * PAGESIZE;
+
+	printf("drive info: maxxfer size %d\n", drive->d_maxxfer);
 }
 
 static int
@@ -414,17 +427,28 @@ nvme_blk_mediainfo(void *arg, bd_media_t *media)
 {
 	struct nvme_namespace *ns = (struct nvme_namespace *)arg;	
 
-	printf("%s: called!\n", __FUNCTION__);
 	media->m_nblks = nvme_ns_get_num_sectors(ns); 
 	media->m_blksize = nvme_ns_get_sector_size(ns);
 	media->m_readonly = B_FALSE;
+
+	printf("media info: blksize %d nblks %ld\n", media->m_blksize, (long)media->m_nblks);
 	return 0;
 }
 
 static int
 nvme_blk_devid_init(void *arg, dev_info_t *devinfo, ddi_devid_t *devid)
 {
-	printf("%s: called!\n", __FUNCTION__);
+	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
+	char ns_id[0x100];
+
+	memcpy(ns_id, &ns->data, sizeof(ns_id));
+
+	if (ddi_devid_init(devinfo, DEVID_ATA_SERIAL, sizeof(ns_id), ns_id, devid) != DDI_SUCCESS)
+	{
+		printf("cannot build device id!\n");
+		return DDI_FAILURE;
+	}
+	printf("device id created!\n");
 	return DDI_SUCCESS;
 }
 
@@ -456,10 +480,10 @@ int _info(struct modinfo *modinfop)
 }
 
 void
-nvme_payload_map(struct nvme_tracker *tr, void *payload, uint32_t payload_size)
+nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, void *kaddr, size_t payload_size)
 {
-	ddi_dma_cookie_t cookie;
-	uint_t cookie_count;
+	ddi_dma_cookie_t cookie[NVME_MAX_PRP_LIST_ENTRIES];
+	uint_t cookie_count, cur_nseg;
 	/*
 	 * Note that we specified PAGE_SIZE for alignment and max
 	 *  segment size when creating the bus dma tags.  So here
@@ -471,10 +495,27 @@ nvme_payload_map(struct nvme_tracker *tr, void *payload, uint32_t payload_size)
 		printf("%s: wrong tracker (qpair == NULL)\n", __FUNCTION__);
 		return;
 	}
-	(void)ddi_dma_addr_bind_handle(tr->qpair->ctrlr->dma_handle, 
-(struct as *)NULL, (caddr_t)payload, payload_size, DDI_DMA_RDWR | DDI_DMA_CONSISTENT, DDI_DMA_DONTWAIT, 0, &cookie, &cookie_count);
+	/* FIXME!! check status!! */
+	(void)ddi_dma_addr_bind_handle(dmah, (struct as *)NULL, 
+		(caddr_t)kaddr, payload_size, DDI_DMA_RDWR | DDI_DMA_CONSISTENT, DDI_DMA_DONTWAIT, 0, cookie, &cookie_count);
 
-	tr->req->cmd.prp1 = cookie.dmac_laddress;
+	tr->req->cmd.prp1 = cookie[0].dmac_laddress;
+
+	if (cookie_count == 2)
+	{
+		tr->req->cmd.prp1 = cookie[1].dmac_laddress;
+	} 
+	else if (cookie_count > 2)
+	{
+		cur_nseg = 1;
+		tr->req->cmd.prp2 = (uint64_t)tr->prp_bus_addr;	
+		while (cur_nseg < cookie_count)
+		{
+			tr->prp[cur_nseg - 1] = cookie[cur_nseg].dmac_laddress;
+			cur_nseg ++;
+		}
+	} 
+			
 }
 #if 0
 #include "nvme_private.h"

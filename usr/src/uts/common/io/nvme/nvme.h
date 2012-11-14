@@ -464,6 +464,7 @@ struct nvme_controller_data {
 		uint8_t		avscc_rsvd  : 7;
 	} __packed avscc;
 
+//	uint8_t			reserved2[248];
 	uint8_t			reserved2[247];
 
 	/* bytes 512-703: nvm command set attributes */

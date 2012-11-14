@@ -109,7 +109,7 @@ struct nvme_tracker {
 	uint16_t			cid;
 
 	uint64_t			prp[NVME_MAX_PRP_LIST_ENTRIES];
-//	bus_addr_t			prp_bus_addr;
+	uint64_t			prp_bus_addr;
 //	bus_dmamap_t			prp_dma_map;
 };
 
@@ -306,7 +306,7 @@ void	nvme_ctrlr_cmd_asynchronous_event_request(struct nvme_controller *ctrlr,
 						  nvme_cb_fn_t cb_fn,
 						  void *cb_arg);
 
-void	nvme_payload_map(struct nvme_tracker *tr, void *addr, uint32_t len);
+void	nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, void *addr, size_t len);
 //void	nvme_payload_map_uio(void *arg, bus_dma_segment_t *seg, int nseg,
 //			     bus_size_t mapsize, int error);
 
@@ -373,6 +373,8 @@ nvme_allocate_request(struct nvme_qpair *q, void *payload, uint32_t payload_size
 	req = TAILQ_FIRST(&q->request_queue);
 	TAILQ_REMOVE(&q->request_queue, req, rq_next);
 	lock_clear(&q->lock);
+
+	memset(req, 0, sizeof(*req));
 
 	req->payload = payload;
 	req->payload_size = payload_size;

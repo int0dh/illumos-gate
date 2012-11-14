@@ -45,6 +45,11 @@
 #include "nvme.h"
 #include "nvme_private.h"
 
+extern void kmdb_enter();
+
+static int
+nvme_ctrlr_configure_intx(struct nvme_controller *nvme);
+
 static void
 nvme_ctrlr_cb(void *arg, const struct nvme_completion *status, struct nvme_request *req)
 {
@@ -136,6 +141,12 @@ nvme_ctrlr_construct_io_qpairs(struct nvme_controller *ctrlr)
 	if (ctrlr->max_xfer_size > NVME_MAX_XFER_SIZE ||
 	    ctrlr->max_xfer_size % PAGESIZE)
 		ctrlr->max_xfer_size = NVME_MAX_XFER_SIZE;
+
+	/* FIXME FIXME FIXME */
+	/* we have to be invoked with already initiazlied ctrl->num_io_queues,
+	* but we don`t. so initialize this to value more than maximal possible
+	* quick and very dirty */
+	ctrlr->num_io_queues = 8;
 
 	ctrlr->ioq = kmem_zalloc(ctrlr->num_io_queues * sizeof(struct nvme_qpair), KM_SLEEP);
 
@@ -359,9 +370,12 @@ nvme_ctrlr_create_qpairs(struct nvme_controller *ctrlr)
 	struct nvme_completion	cpl;
 	int			i;
 
+	printf("%s: %d IO queues specified!\n", __func__, ctrlr->num_io_queues);
+
 	for (i = 0; i < ctrlr->num_io_queues; i++) {
 		qpair = &ctrlr->ioq[i];
 
+		printf("create IO cq!!!!\n");
 		nvme_ctrlr_cmd_create_io_cq(ctrlr, qpair, qpair->vector,
 		    nvme_ctrlr_cb, &cpl);
 
@@ -370,6 +384,7 @@ nvme_ctrlr_create_qpairs(struct nvme_controller *ctrlr)
 			return (ENXIO);
 		}
 
+		printf("create IO sq!!!\n");
 		nvme_ctrlr_cmd_create_io_sq(qpair->ctrlr, qpair,
 		    nvme_ctrlr_cb, &cpl);
 
@@ -391,7 +406,7 @@ nvme_ctrlr_construct_namespaces(struct nvme_controller *ctrlr)
 	printf("ctrlr->cdata.nn is %d!\n", ctrlr->cdata.nn);
 	for (i = 0; i < ctrlr->cdata.nn; i++) {
 		ns = &ctrlr->ns[i];
-		status = nvme_ns_construct(ns, i, ctrlr);
+		status = nvme_ns_construct(ns, i + 1, ctrlr);
 		if (status != 0)
 			return (status);
 		printf("namespace %d exist!\n", i);
@@ -439,15 +454,17 @@ nvme_ctrlr_start(void *ctrlr_arg)
 {
 	struct nvme_controller *ctrlr = ctrlr_arg;
 
-	nvme_interrupt_enable(ctrlr);
+	printf("configure interrupts..\n");
 
+	nvme_ctrlr_configure_intx(ctrlr);
+	
 	if (nvme_ctrlr_identify(ctrlr) != 0)
 		return (ENXIO);
-
 
 	if (nvme_ctrlr_set_num_qpairs(ctrlr) != 0)
 		return (ENXIO);
 
+	printf("create qpairs..\n");
 	if (nvme_ctrlr_create_qpairs(ctrlr) != 0)
 		return (ENXIO);
 
@@ -467,6 +484,7 @@ nvme_ctrlr_softintr_handler(char *arg, char *unused)
 {
 	struct nvme_qpair *qpair = (struct nvme_qpair *)arg;
 
+
 	nvme_qpair_process_completions(qpair);
 
 	nvme_mmio_write_4(qpair->ctrlr, intmc, 1);
@@ -478,11 +496,13 @@ nvme_ctrlr_intx_handler(char *arg, char *unused)
 {
 	struct nvme_qpair *qpair = (struct nvme_qpair *)arg;
 
+
 	(void)ddi_intr_trigger_softint(*qpair->soft_intr_handle, NULL);
 
-	nvme_mmio_write_4(qpair->ctrlr, intms, 1);
+//	kmdb_enter();
+	nvme_mmio_write_4(qpair->ctrlr, intms, 0x1);
 
-	return DDI_INTR_CLAIMED;
+	return 0;
 }
 
 void
@@ -555,6 +575,8 @@ nvme_register_interrupts(struct nvme_controller *nvme, int intr_type)
 	nvme->adminq.soft_intr_handle = &nvme->soft_intr_handle[0];
  
 	printf("%d interrupt handlers registered ok!\n", count); 
+	nvme_interrupt_enable(nvme);
+
 	return DDI_SUCCESS;
 }
 /* it is not clear yet how to get CPU count, so let`s hardcode the value for now */
@@ -565,14 +587,8 @@ nvme_ctrlr_configure_intx(struct nvme_controller *nvme)
 {
 	int32_t intr_type;
 
-	/* allocate one queue par per available interrupt */
-	/* TODO: do not allocate more than number of CPUs */
-	/* otherwise, some performance degradation may occur */
-	nvme->num_io_queues = min(nvme->intr_size / sizeof(ddi_intr_handle_t), CPU_COUNT);
-	/* always use one I/O qpair per CPU for best performance */
-	nvme->per_cpu_io_queues = 1;
-	nvme->rid = 0;
 	nvme->msix_enabled = 0;
+	nvme->rid = 0;
 
 	if (ddi_intr_get_supported_types(nvme->devinfo, &intr_type) != DDI_SUCCESS)
 	{
@@ -588,6 +604,13 @@ nvme_ctrlr_configure_intx(struct nvme_controller *nvme)
 	}
 	nvme_register_interrupts(nvme, intr_type);
 	
+	/* allocate one queue par per available interrupt */
+	/* TODO: do not allocate more than number of CPUs */
+	/* otherwise, some performance degradation may occur */
+	nvme->num_io_queues = min(nvme->intr_size / sizeof(ddi_intr_handle_t), CPU_COUNT);
+	printf("NUM I/O queues %d\n", nvme->num_io_queues);
+	/* always use one I/O qpair per CPU for best performance */
+	nvme->per_cpu_io_queues = 1;
 	return (0);
 }
 
@@ -649,9 +672,6 @@ nvme_ctrlr_construct(struct nvme_controller *ctrlr)
 
 	ctrlr->is_started = B_FALSE;
 
-	printf("configure interrupts..\n");
-
-	nvme_ctrlr_configure_intx(ctrlr);
 
 	/*
 	 * Software emulators may set the doorbell stride to something

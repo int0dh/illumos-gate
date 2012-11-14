@@ -193,6 +193,7 @@ nvme_ns_get_sector_size(struct nvme_namespace *ns)
 uint64_t
 nvme_ns_get_num_sectors(struct nvme_namespace *ns)
 {
+	printf("data nsize %ld (first field)\n", (long)ns->data.nsze);
 	return (ns->data.nsze);
 }
 

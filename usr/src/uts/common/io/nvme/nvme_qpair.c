@@ -438,7 +438,7 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_request *req)
 	else
 	{
 		if (req->payload_size > 0)
-			nvme_payload_map(tr, req->payload, req->payload_size);
+			nvme_payload_map(tr, tr->qpair->ctrlr->dma_handle, req->payload, req->payload_size);
 
 		nvme_qpair_submit_cmd(tr->qpair, tr);
 	}
