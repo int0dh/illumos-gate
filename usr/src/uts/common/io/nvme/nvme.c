@@ -156,6 +156,8 @@ nvme_io_completed(void *arg, const struct nvme_completion *status, struct nvme_r
 	bd_xfer_t *xfer = req->xfer;
 
 	bd_xfer_done(xfer, 0);
+
+	printf("io completed: xfer->x_kaddr %s\n", (char *)xfer->x_kaddr);
 	/* FIXME!!! */
 	/* we are using only io queue 0 for now, howere allocate much more ioqs */
 	/* that needs to be fixed. we has to know which queue is in use */
@@ -417,7 +419,7 @@ int _info(struct modinfo *modinfop)
 }
 
 void
-nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, void *kaddr, size_t payload_size)
+nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_t *dmac, void *kaddr, size_t payload_size)
 {
 	ddi_dma_cookie_t cookie[NVME_MAX_PRP_LIST_ENTRIES];
 	uint_t cookie_count, cur_nseg;
@@ -432,17 +434,19 @@ nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, void *kaddr, si
 		printf("%s: wrong tracker (qpair == NULL)\n", __FUNCTION__);
 		return;
 	}
-	/* FIXME!! check status!! */
-	(void)ddi_dma_addr_bind_handle(dmah, (struct as *)NULL, 
-		(caddr_t)kaddr, payload_size, DDI_DMA_RDWR | DDI_DMA_CONSISTENT, DDI_DMA_DONTWAIT, 0, cookie, &cookie_count);
-
-	tr->req->cmd.prp1 = cookie[0].dmac_laddress;
-
-	if (cookie_count > 1)
+	if (dmac)
 	{
-		printf("BAD cookie_count value! Is the SG enabled in attributes??\n");
-		/* shall we panic here? */
-		return;
+		tr->req->cmd.prp1 = dmac->dmac_laddress;
+	}
+	else
+	{
+		/* FIXME!! check status!! */
+		(void)ddi_dma_addr_bind_handle(dmah, (struct as *)NULL, 
+			(caddr_t)kaddr, payload_size, DDI_DMA_RDWR | DDI_DMA_CONSISTENT, DDI_DMA_DONTWAIT, 0, cookie, &cookie_count);
+
+		tr->req->cmd.prp1 = cookie[0].dmac_laddress;
+		if (cookie_count > 1)
+			panic("BAD cookie_count value! Is the SG enabled in attributes??\n");
 	}
 			
 }

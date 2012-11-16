@@ -239,11 +239,17 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 	DDI_DMA_RDWR | DDI_DMA_CONSISTENT, DDI_DMA_DONTWAIT, 0, &cookie,
 	&cookie_count);
  
+	if (cookie_count != 1)
+		panic("invalid cookie count 1");
+
 	qpair->cmd_bus_addr = cookie.dmac_laddress;
 
 	(void)ddi_dma_addr_bind_handle(qpair->ctrlr->dma_handle, (struct as *)NULL, (caddr_t)qpair->cpl, qpair->num_entries * sizeof(struct nvme_completion),
 	DDI_DMA_RDWR | DDI_DMA_CONSISTENT, DDI_DMA_DONTWAIT, 0, &cookie,
 	&cookie_count);
+
+	if (cookie_count != 1)
+		panic("invalid cookie count 2");
 
 	qpair->cpl_bus_addr = cookie.dmac_laddress;
 
@@ -412,6 +418,7 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_request *req)
 	struct nvme_tracker	*tr;
 	int			err;
 	ddi_dma_handle_t	dmah;
+	ddi_dma_cookie_t        *dmac = NULL;
 
 //	mtx_lock(&qpair->lock);
 
@@ -438,14 +445,18 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_request *req)
 	if (req->payload_size > 0)
 	{
 		if (req->xfer)
-			dmah = req->xfer->x_dmah;
+		{
+			if (req->xfer->x_ndmac)
+				dmac = &req->xfer->x_dmac;		
+			else
+				dmah = req->xfer->x_dmah;
+		}
 		else
 			dmah =  tr->qpair->ctrlr->dma_handle;
 
-		nvme_payload_map(tr, dmah, req->payload, req->payload_size);
-
-		nvme_qpair_submit_cmd(tr->qpair, tr);
+		nvme_payload_map(tr, dmah, dmac, req->payload, req->payload_size);
 	}
+	nvme_qpair_submit_cmd(tr->qpair, tr);
 	lock_clear(&qpair->lock);
 	/* TODO: reimplement me! */
 #if 0

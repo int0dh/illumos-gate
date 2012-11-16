@@ -98,6 +98,9 @@ nvme_ctrlr_cmd_create_io_cq(struct nvme_controller *ctrlr,
 
 	req = nvme_allocate_request(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
 
+	if (req == NULL)
+		panic("cannot allocate request");
+
 	cmd = &req->cmd;
 	cmd->opc = NVME_OPC_CREATE_IO_CQ;
 
@@ -121,6 +124,9 @@ nvme_ctrlr_cmd_create_io_sq(struct nvme_controller *ctrlr,
 	struct nvme_command *cmd;
 
 	req = nvme_allocate_request(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
+
+	if (req == NULL)
+		panic("cannot allocate request 2");
 
 	cmd = &req->cmd;
 	cmd->opc = NVME_OPC_CREATE_IO_SQ;

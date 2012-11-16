@@ -483,9 +483,14 @@ static uint_t
 nvme_ctrlr_softintr_handler(char *arg, char *unused)
 {
 	struct nvme_qpair *qpair = (struct nvme_qpair *)arg;
+	struct nvme_controller *nvme = qpair->ctrlr;
+// comment-out the code until MSI/MSI-X 
+//	nvme_qpair_process_completions(qpair);
 
+	nvme_qpair_process_completions(&nvme->adminq);
 
-	nvme_qpair_process_completions(qpair);
+	if (nvme->ioq[0].cpl)
+		nvme_qpair_process_completions(&nvme->ioq[0]);
 
 	nvme_mmio_write_4(qpair->ctrlr, intmc, 1);
 	return DDI_INTR_CLAIMED;
@@ -496,11 +501,10 @@ nvme_ctrlr_intx_handler(char *arg, char *unused)
 {
 	struct nvme_qpair *qpair = (struct nvme_qpair *)arg;
 
-
+	nvme_mmio_write_4(qpair->ctrlr, intms, 0x1);
 	(void)ddi_intr_trigger_softint(*qpair->soft_intr_handle, NULL);
 
 //	kmdb_enter();
-	nvme_mmio_write_4(qpair->ctrlr, intms, 0x1);
 
 	return 0;
 }
@@ -553,12 +557,16 @@ nvme_register_interrupts(struct nvme_controller *nvme, int intr_type)
 
 	if (ret != DDI_SUCCESS)
 	{
+		printf("cannot allocate interrupt handle!\n");
 		kmem_free(nvme->intr_handle, nvme->intr_size);
 		kmem_free(nvme->soft_intr_handle, nvme->intr_size);
 		return ret;
 	}
+/* DISABLE THIS code for now, until we get MSI working */
+#if 0
 	for (i = 1; i < count; i ++)
 	{
+		
 		ret = ddi_intr_add_handler(nvme->intr_handle[i], nvme_ctrlr_intx_handler, (caddr_t)&nvme->ioq[i - 1], NULL);
 		if (ret != DDI_SUCCESS)
 		{
@@ -569,6 +577,7 @@ nvme_register_interrupts(struct nvme_controller *nvme, int intr_type)
 
 		nvme->ioq[i - 1].soft_intr_handle = &nvme->soft_intr_handle[i];
 	}
+#endif
 	/* register handler for admin qpair */
 	ddi_intr_add_handler(nvme->intr_handle[0], nvme_ctrlr_intx_handler, (caddr_t)&nvme->adminq, NULL);
 	ddi_intr_add_softint(nvme->devinfo, &nvme->soft_intr_handle[0], DDI_INTR_SOFTPRI_MAX, nvme_ctrlr_softintr_handler, (caddr_t)&nvme->adminq);
