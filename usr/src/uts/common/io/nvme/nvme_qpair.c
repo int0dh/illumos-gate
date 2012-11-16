@@ -411,6 +411,7 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_request *req)
 {
 	struct nvme_tracker	*tr;
 	int			err;
+	ddi_dma_handle_t	dmah;
 
 //	mtx_lock(&qpair->lock);
 
@@ -433,12 +434,15 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_request *req)
 	SLIST_REMOVE_HEAD(&qpair->free_tr, slist);
 	tr->req = req;
 
-	if (req->xfer != NULL)
-		printf("data transfer is not supported yet!\n");
-	else
+	
+	if (req->payload_size > 0)
 	{
-		if (req->payload_size > 0)
-			nvme_payload_map(tr, tr->qpair->ctrlr->dma_handle, req->payload, req->payload_size);
+		if (req->xfer)
+			dmah = req->xfer->x_dmah;
+		else
+			dmah =  tr->qpair->ctrlr->dma_handle;
+
+		nvme_payload_map(tr, dmah, req->payload, req->payload_size);
 
 		nvme_qpair_submit_cmd(tr->qpair, tr);
 	}

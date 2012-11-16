@@ -23,30 +23,45 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
+#include <sys/modctl.h>
+#include <sys/blkdev.h>
+#include <sys/types.h>
+#include <sys/errno.h>
+#include <sys/param.h>
+#include <sys/stropts.h>
+#include <sys/stream.h>
+#include <sys/strsubr.h>
+#include <sys/kmem.h>
+#include <sys/conf.h>
+#include <sys/devops.h>
+#include <sys/ksynch.h>
+#include <sys/stat.h>
+#include <sys/modctl.h>
+#include <sys/debug.h>
+#include <sys/pci.h>
+#include <sys/sysmacros.h>
 
 #include "nvme_private.h"
 
 int
-nvme_ns_cmd_read(struct nvme_namespace *ns, void *payload, uint64_t lba,
-    uint32_t lba_count, nvme_cb_fn_t cb_fn, void *cb_arg)
+nvme_ns_cmd_read(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
 	struct nvme_request	*req;
 	struct nvme_command	*cmd;
 
-	req = nvme_allocate_request(&ns->ctrlr->ioq[0], payload, lba_count*512, cb_fn, cb_arg);
+	req = nvme_allocate_request(&ns->ctrlr->ioq[0], xfer->x_kaddr, xfer->x_nblks*512, cb_fn, cb_arg);
 
 	if (req == NULL)
 		return (ENOMEM);
+	req->xfer = xfer;
+
 	cmd = &req->cmd;
 	cmd->opc = NVME_OPC_READ;
 	cmd->nsid = ns->id;
 
 	/* TODO: create a read command data structure */
-	*(uint64_t *)&cmd->cdw10 = lba;
-	cmd->cdw12 = lba_count-1;
+	*(uint64_t *)&cmd->cdw10 = xfer->x_blkno;
+	cmd->cdw12 = xfer->x_nblks - 1;
 
 	nvme_ctrlr_submit_io_request(ns->ctrlr, req);
 
@@ -54,24 +69,26 @@ nvme_ns_cmd_read(struct nvme_namespace *ns, void *payload, uint64_t lba,
 }
 
 int
-nvme_ns_cmd_write(struct nvme_namespace *ns, void *payload, uint64_t lba,
-    uint32_t lba_count, nvme_cb_fn_t cb_fn, void *cb_arg)
+nvme_ns_cmd_write(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
 	struct nvme_request	*req;
 	struct nvme_command	*cmd;
 
-	req = nvme_allocate_request(&ns->ctrlr->ioq[0], payload, lba_count*512, cb_fn, cb_arg);
+	req = nvme_allocate_request(&ns->ctrlr->ioq[0], xfer->x_kaddr, xfer->x_nblks*512, cb_fn, cb_arg);
 
 	if (req == NULL)
 		return (ENOMEM);
+
+	req->xfer = xfer;
 
 	cmd = &req->cmd;
 	cmd->opc = NVME_OPC_WRITE;
 	cmd->nsid = ns->id;
 
 	/* TODO: create a write command data structure */
-	*(uint64_t *)&cmd->cdw10 = lba;
-	cmd->cdw12 = lba_count-1;
+	*(uint64_t *)&cmd->cdw10 = xfer->x_blkno;
+
+	cmd->cdw12 = xfer->x_nblks - 1;
 
 	nvme_ctrlr_submit_io_request(ns->ctrlr, req);
 
