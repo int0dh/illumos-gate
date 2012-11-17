@@ -158,7 +158,7 @@ struct nvme_qpair {
 
 	TAILQ_HEAD(, nvme_request)	request_queue;
 	struct nvme_tracker	**act_tr;
-
+	struct nvme_tracker     *free_tr_mem;
 	lock_t		lock;
 	
 } __aligned(CACHE_LINE_SIZE);
@@ -319,7 +319,7 @@ void	nvme_ctrlr_submit_admin_request(struct nvme_controller *ctrlr,
 void	nvme_ctrlr_submit_io_request(struct nvme_controller *ctrlr,
 				     struct nvme_request *req);
 
-void	nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
+int	nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 			     uint16_t vector, uint32_t num_entries,
 			     uint32_t num_trackers, uint32_t max_xfer_size,
 			     struct nvme_controller *ctrlr);
@@ -391,12 +391,11 @@ nvme_allocate_request(struct nvme_qpair *q, void *payload, uint32_t payload_size
 static __inline void
 nvme_free_request(struct nvme_qpair *q, struct nvme_request *req)
 {
+	mutex_destroy(&req->mutex);
+	cv_destroy(&req->cv);
 
 	lock_set(&q->lock);
 	TAILQ_INSERT_HEAD(&q->request_queue, req, rq_next);
 	lock_clear(&q->lock);
-
-	mutex_destroy(&req->mutex);
-	cv_destroy(&req->cv);
 }
 #endif /* __NVME_PRIVATE_H__ */

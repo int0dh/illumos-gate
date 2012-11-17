@@ -113,10 +113,11 @@ static ddi_dma_attr_t nvme_req_dma_attr = {
         4096,		                     /* dma_attr_align       */
         1,                              /* dma_attr_burstsizes  */
         1,                              /* dma_attr_minxfer     */
-        0xFFFFFFFFull,                  /* dma_attr_maxxfer     */
+	/* device limits IO transactions to page size */
+        0x4096ull,			/* dma_attr_maxxfer     */
         0xFFFFFFFFFFFFFFFFull,          /* dma_attr_seg         */
 	/* no scatter-gather for now */
-        1,                              /* dma_attr_sgllen      */
+        2,                              /* dma_attr_sgllen      */
         1,                              /* dma_attr_granular    */
   	0,
 };
@@ -155,15 +156,13 @@ nvme_io_completed(void *arg, const struct nvme_completion *status, struct nvme_r
 	struct nvme_namespace *ns = arg;
 	bd_xfer_t *xfer = req->xfer;
 
-	bd_xfer_done(xfer, 0);
-
-	printf("io completed: xfer->x_kaddr %s\n", (char *)xfer->x_kaddr);
 	/* FIXME!!! */
-	/* we are using only io queue 0 for now, howere allocate much more ioqs */
-	/* that needs to be fixed. we has to know which queue is in use */
+	/* we are using only io queue 0 for now, however we allocate much more ioqs */
+	/* this needs to be fixed. we has to know which queue is in use */
 	nvme_free_request(&ns->ctrlr->ioq[0], req);
 
-	printf("nvme_io_completed callback called!\n");
+	bd_xfer_done(xfer, 0);
+	printf("complete request 0x%p\n", xfer);
 }
 	
 static int
@@ -185,6 +184,7 @@ nvme_blk_read(void *arg, bd_xfer_t *xfer)
 	if ((xfer->x_blkno + xfer->x_nblks) > nvme_ns_get_size(ns))	 
 		return EINVAL;
 
+	printf("read: xfer at 0x%p\n", xfer);
 	nvme_ns_cmd_read(ns, xfer, nvme_io_completed, ns);
 	/* TODO: wait for timeout, then cancel request and return with error */
 	return DDI_SUCCESS; 
@@ -347,17 +347,15 @@ nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
 
 	printf("%s: called!\n", __FUNCTION__);
 
-	/* FIXME!! */
-	drive->d_maxxfer = nvme_ns_get_max_io_xfer_size(ns);
+	/* it seems device does not support big requests */
+	drive->d_maxxfer = min(nvme_ns_get_max_io_xfer_size(ns), PAGESIZE);
 	drive->d_qsize = 2;
 	drive->d_removable = B_FALSE;
 	drive->d_hotpluggable = B_FALSE;
 	drive->d_target = 0;
 	drive->d_lun = ((char *)ns - (char *)&ns->ctrlr->ns[0]) / sizeof(struct nvme_namespace);
-
-	/* align maxxfer down to block size */
-	drive->d_maxxfer = (drive->d_maxxfer / blksize) * blksize;
-
+	/* adjust d_maxxfer to be DEV_BSIZE aligned */
+	drive->d_maxxfer = (drive->d_maxxfer / DEV_BSIZE) * DEV_BSIZE;
 	printf("drive info: maxxfer size %d\n", drive->d_maxxfer);
 }
 
@@ -421,8 +419,10 @@ int _info(struct modinfo *modinfop)
 void
 nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_t *dmac, void *kaddr, size_t payload_size)
 {
+	/* Let`s implement Scatter/Gather. Some days.. */
 	ddi_dma_cookie_t cookie[NVME_MAX_PRP_LIST_ENTRIES];
 	uint_t cookie_count, cur_nseg;
+	int res;
 	/*
 	 * Note that we specified PAGE_SIZE for alignment and max
 	 *  segment size when creating the bus dma tags.  So here
@@ -436,17 +436,25 @@ nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_
 	}
 	if (dmac)
 	{
+		printf("DMA coockie set. PRP1 at 0x%16x\n", (unsigned int)dmac->dmac_laddress);
 		tr->req->cmd.prp1 = dmac->dmac_laddress;
 	}
 	else
 	{
-		/* FIXME!! check status!! */
-		(void)ddi_dma_addr_bind_handle(dmah, (struct as *)NULL, 
+		res = ddi_dma_addr_bind_handle(dmah, (struct as *)NULL, 
 			(caddr_t)kaddr, payload_size, DDI_DMA_RDWR | DDI_DMA_CONSISTENT, DDI_DMA_DONTWAIT, 0, cookie, &cookie_count);
-
+		switch (res)
+		{
+			case DDI_DMA_MAPPED:
+				break;
+			default:
+				panic("nvme_payload_map: cannot map DMA");
+		}
 		tr->req->cmd.prp1 = cookie[0].dmac_laddress;
-		if (cookie_count > 1)
-			panic("BAD cookie_count value! Is the SG enabled in attributes??\n");
+		/* we do not support S/G, so panic when number of cookies is more than 2 */
+		if (cookie_count == 2)
+			tr->req->cmd.prp2 = cookie[1].dmac_laddress;
+		else if (cookie_count > 2)
+			panic("nvme_payload_map: cookie_count > 2!\n");
 	}
-			
 }

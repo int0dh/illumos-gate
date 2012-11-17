@@ -57,6 +57,7 @@ nvme_ctrlr_cb(void *arg, const struct nvme_completion *status, struct nvme_reque
 
 	printf("callback %s called! req at 0x%p\n", __func__, req);
 
+	/* TODO: do ddi_dma_sync() here */
 	mutex_enter(&req->mutex);
 
 	/*
@@ -72,34 +73,18 @@ nvme_ctrlr_cb(void *arg, const struct nvme_completion *status, struct nvme_reque
 	printf("callback completed!\n");
 }
 
-static void
+static int 
 nvme_ctrlr_construct_admin_qpair(struct nvme_controller *ctrlr)
 {
-	struct nvme_qpair	*qpair;
-	uint32_t		num_entries;
-
-	qpair = &ctrlr->adminq;
-
-	num_entries = NVME_ADMIN_ENTRIES;
-	/*
-	 * If admin_entries was overridden to an invalid value, revert it
-	 *  back to our default value.
-	 */
-	if (num_entries < NVME_MIN_ADMIN_ENTRIES ||
-	    num_entries > NVME_MAX_ADMIN_ENTRIES) {
-		printf("nvme: invalid hw.nvme.admin_entries=%d specified\n",
-		    num_entries);
-		num_entries = NVME_ADMIN_ENTRIES;
-	}
-
+	struct nvme_qpair	*qpair = &ctrlr->adminq;
 	/*
 	 * The admin queue's max xfer size is treated differently than the
 	 *  max I/O xfer size.  16KB is sufficient here - maybe even less?
 	 */
-	nvme_qpair_construct(qpair, 
+	return nvme_qpair_construct(qpair, 
 			     0, /* qpair ID */
 			     0, /* vector */
-			     num_entries,
+			     NVME_ADMIN_ENTRIES,
 			     NVME_ADMIN_TRACKERS,
 			     16*1024, /* max xfer size */
 			     ctrlr);
@@ -134,13 +119,6 @@ nvme_ctrlr_construct_io_qpairs(struct nvme_controller *ctrlr)
 	num_trackers = min(num_trackers, (num_entries-1));
 
 	ctrlr->max_xfer_size = NVME_MAX_XFER_SIZE;
-	/*
-	 * Check that tunable doesn't specify a size greater than what our
-	 *  driver supports, and is an even PAGE_SIZE multiple.
-	 */
-	if (ctrlr->max_xfer_size > NVME_MAX_XFER_SIZE ||
-	    ctrlr->max_xfer_size % PAGESIZE)
-		ctrlr->max_xfer_size = NVME_MAX_XFER_SIZE;
 
 	/* FIXME FIXME FIXME */
 	/* we have to be invoked with already initiazlied ctrl->num_io_queues,
@@ -150,10 +128,8 @@ nvme_ctrlr_construct_io_qpairs(struct nvme_controller *ctrlr)
 
 	ctrlr->ioq = kmem_zalloc(ctrlr->num_io_queues * sizeof(struct nvme_qpair), KM_SLEEP);
 
-	if (ctrlr->ioq == NULL)
-		return (ENOMEM);
-
-	for (i = 0; i < ctrlr->num_io_queues; i++) {
+	for (i = 0; i < ctrlr->num_io_queues; i++)
+	{
 		qpair = &ctrlr->ioq[i];
 
 		/*
@@ -163,6 +139,7 @@ nvme_ctrlr_construct_io_qpairs(struct nvme_controller *ctrlr)
 		 * For I/O queues, use the controller-wide max_xfer_size
 		 *  calculated in nvme_attach().
 		 */
+		/* TODO: do something when nvme_qpair_construct() fails */
 		nvme_qpair_construct(qpair,
 				     i+1, /* qpair ID */
 				     ctrlr->msix_enabled ? i+1 : 0, /* vector */
@@ -171,13 +148,7 @@ nvme_ctrlr_construct_io_qpairs(struct nvme_controller *ctrlr)
 				     ctrlr->max_xfer_size,
 				     ctrlr);
 
-/* INVESTIGATE ME */
-#if 0
-		if (ctrlr->per_cpu_io_queues)
-			bus_bind_intr(ctrlr->dev, qpair->res, i);
-#endif
 	}
-
 	return (0);
 }
 
@@ -191,23 +162,18 @@ nvme_ctrlr_wait_for_ready(struct nvme_controller *ctrlr)
 	cc.raw = nvme_mmio_read_4(ctrlr, cc);
 	csts.raw = nvme_mmio_read_4(ctrlr, csts);
 
-	if (!cc.bits.en) {
-		printf("%s called with cc.en = 0\n", __func__);
+	if (!cc.bits.en)
 		return (ENXIO);
-	}
 
 	ms_waited = 0;
 
-	while (!csts.bits.rdy) {
+	while (!csts.bits.rdy)
+	{
 		DELAY(1000);
-		if (ms_waited++ > ctrlr->ready_timeout_in_ms) {
-			printf("controller did not become "
-			    "ready within %d ms\n", ctrlr->ready_timeout_in_ms);
+		if (ms_waited ++ > ctrlr->ready_timeout_in_ms)
 			return (ENXIO);
-		}
 		csts.raw = nvme_mmio_read_4(ctrlr, csts);
 	}
-
 	return (0);
 }
 
@@ -269,14 +235,12 @@ nvme_ctrlr_enable(struct nvme_controller *ctrlr)
 
 	nvme_mmio_write_4(ctrlr, cc, cc.raw);
 	DELAY(5000);
-
 	return (nvme_ctrlr_wait_for_ready(ctrlr));
 }
 
 int
 nvme_ctrlr_reset(struct nvme_controller *ctrlr)
 {
-
 	nvme_ctrlr_disable(ctrlr);
 	return (nvme_ctrlr_enable(ctrlr));
 }
@@ -314,13 +278,10 @@ nvme_ctrlr_identify(struct nvme_controller *ctrlr)
 	nvme_ctrlr_cmd_identify_controller(ctrlr, &ctrlr->cdata,
 	    nvme_ctrlr_cb, &cpl);
 
-	if (cpl.sf_sc || cpl.sf_sct) {
-		printf("nvme_identify_controller failed!\n");
+	if (cpl.sf_sc || cpl.sf_sct) 
 		return (ENXIO);
-	}
-	printf("nvme->cdata.vid = %04x\n", ctrlr->cdata.vid);
 
-	printf("nvme_identify_controller success!\n");
+	printf("nvme->cdata.vid = %04x\n", ctrlr->cdata.vid);
 	return (DDI_SUCCESS);
 }
 
@@ -333,11 +294,8 @@ nvme_ctrlr_set_num_qpairs(struct nvme_controller *ctrlr)
 	nvme_ctrlr_cmd_set_num_queues(ctrlr, ctrlr->num_io_queues,
 	    nvme_ctrlr_cb, &cpl);
 
-	if (cpl.sf_sc || cpl.sf_sct) {
-		printf("nvme_set_num_queues failed!\n");
+	if (cpl.sf_sc || cpl.sf_sct)
 		return (ENXIO);
-	}
-
 	/*
 	 * Data in cdw0 is 0-based.
 	 * Lower 16-bits indicate number of submission queues allocated.
@@ -345,13 +303,13 @@ nvme_ctrlr_set_num_qpairs(struct nvme_controller *ctrlr)
 	 */
 	sq_allocated = (cpl.cdw0 & 0xFFFF) + 1;
 	cq_allocated = (cpl.cdw0 >> 16) + 1;
-
 	/*
 	 * Check that the controller was able to allocate the number of
 	 *  queues we requested.  If not, revert to one IO queue.
 	 */
 	if (sq_allocated < ctrlr->num_io_queues ||
-	    cq_allocated < ctrlr->num_io_queues) {
+	    cq_allocated < ctrlr->num_io_queues) 
+	{
 		ctrlr->num_io_queues = 1;
 		ctrlr->per_cpu_io_queues = 0;
 
@@ -359,8 +317,7 @@ nvme_ctrlr_set_num_qpairs(struct nvme_controller *ctrlr)
 		 *  previously but now found to be not needed.
 		 */
 	}
-
-	return (0);
+	return 0;
 }
 
 static int
@@ -372,29 +329,25 @@ nvme_ctrlr_create_qpairs(struct nvme_controller *ctrlr)
 
 	printf("%s: %d IO queues specified!\n", __func__, ctrlr->num_io_queues);
 
-	for (i = 0; i < ctrlr->num_io_queues; i++) {
+	for (i = 0; i < ctrlr->num_io_queues; i++)
+	{
 		qpair = &ctrlr->ioq[i];
 
 		printf("create IO cq!!!!\n");
 		nvme_ctrlr_cmd_create_io_cq(ctrlr, qpair, qpair->vector,
 		    nvme_ctrlr_cb, &cpl);
 
-		if (cpl.sf_sc || cpl.sf_sct) {
-			printf("nvme_create_io_cq failed!\n");
+		if (cpl.sf_sc || cpl.sf_sct)
 			return (ENXIO);
-		}
 
 		printf("create IO sq!!!\n");
 		nvme_ctrlr_cmd_create_io_sq(qpair->ctrlr, qpair,
 		    nvme_ctrlr_cb, &cpl);
 
-		if (cpl.sf_sc || cpl.sf_sct) {
-			printf("nvme_create_io_sq failed!\n");
+		if (cpl.sf_sc || cpl.sf_sct)
 			return (ENXIO);
-		}
 	}
-
-	return (0);
+	return 0;
 }
 
 static int
@@ -404,15 +357,15 @@ nvme_ctrlr_construct_namespaces(struct nvme_controller *ctrlr)
 	int			i, status;
 
 	printf("ctrlr->cdata.nn is %d!\n", ctrlr->cdata.nn);
-	for (i = 0; i < ctrlr->cdata.nn; i++) {
+	for (i = 0; i < ctrlr->cdata.nn; i++)
+	{
 		ns = &ctrlr->ns[i];
 		status = nvme_ns_construct(ns, i + 1, ctrlr);
 		if (status != 0)
 			return (status);
 		printf("namespace %d exist!\n", i);
 	}
-
-	return (0);
+	return 0;
 }
 
 static void
@@ -496,16 +449,22 @@ nvme_ctrlr_softintr_handler(char *arg, char *unused)
 	return DDI_INTR_CLAIMED;
 }
 
-static uint_t 
+uint_t 
 nvme_ctrlr_intx_handler(char *arg, char *unused)
 {
 	struct nvme_qpair *qpair = (struct nvme_qpair *)arg;
 
 	nvme_mmio_write_4(qpair->ctrlr, intms, 0x1);
-	(void)ddi_intr_trigger_softint(*qpair->soft_intr_handle, NULL);
+
+	if (qpair->soft_intr_handle)
+		(void)ddi_intr_trigger_softint(*qpair->soft_intr_handle, NULL);
 
 //	kmdb_enter();
 
+	/* for some reason kernel invokes us again and again when we return */
+	/*  DDI_INTR_CLAIMED. Not sure if this not a bug in QEMU */
+	/* probably sharing PCI INTx interrupt gives such an effect */
+	/* so let`s return 0 here, just as a workaround */
 	return 0;
 }
 
@@ -738,9 +697,6 @@ void
 nvme_ctrlr_submit_io_request(struct nvme_controller *ctrlr,
     struct nvme_request *req)
 {
-	struct nvme_qpair       *qpair;
-
-	qpair = &ctrlr->ioq[0];
-
+	struct nvme_qpair       *qpair = &ctrlr->ioq[0];
 	nvme_qpair_submit_request(qpair, req);
 }
