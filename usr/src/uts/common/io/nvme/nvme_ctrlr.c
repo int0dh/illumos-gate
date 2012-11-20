@@ -698,5 +698,14 @@ nvme_ctrlr_submit_io_request(struct nvme_controller *ctrlr,
     struct nvme_request *req)
 {
 	struct nvme_qpair       *qpair = &ctrlr->ioq[0];
+
+	mutex_enter(&req->mutex);
 	nvme_qpair_submit_request(qpair, req);
+	cv_wait(&req->cv, &req->mutex);
+
+	if (req->xfer)
+		bd_xfer_done(req->xfer, 0);
+
+	mutex_exit(&req->mutex);
+	nvme_free_request(qpair, req);
 }

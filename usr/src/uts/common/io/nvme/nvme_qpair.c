@@ -411,7 +411,7 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_request *req)
 	int			err;
 	ddi_dma_handle_t	dmah;
 	ddi_dma_cookie_t        *dmac = NULL;
-
+	int dmac_size = 0;
 //	mtx_lock(&qpair->lock);
 
 	lock_set(&qpair->lock);
@@ -435,19 +435,19 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_request *req)
 	{
 		if (req->xfer)
 		{
+			/* xfer is already mapped and ready with cookies */
 			if (req->xfer->x_ndmac)
 			{
-				printf("payload at 0x%p (virtual address)\n",
-					req->payload);
 				dmac = &req->xfer->x_dmac;		
+				dmac_size = req->xfer->x_ndmac;
 			}
 			else
-				dmah = req->xfer->x_dmah;
+				panic("xfer is not DMA mapped!");
 		}
 		else
 			dmah =  tr->qpair->ctrlr->dma_handle;
 
-		nvme_payload_map(tr, dmah, dmac, req->payload, req->payload_size);
+		nvme_payload_map(tr, dmah, dmac, dmac_size, req->payload, req->payload_size);
 	}
 	nvme_qpair_submit_cmd(tr->qpair, tr);
 	lock_clear(&qpair->lock);

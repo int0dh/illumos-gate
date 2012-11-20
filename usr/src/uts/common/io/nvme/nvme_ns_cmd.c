@@ -65,8 +65,6 @@ nvme_ns_cmd_read(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn,
 
 	nvme_ctrlr_submit_io_request(ns->ctrlr, req);
 
-	printf("nvme_ns_cmd_read: read %lu blocks starting from %lu\n", xfer->x_nblks, (long unsigned)xfer->x_blkno); 
-
 	return (0);
 }
 

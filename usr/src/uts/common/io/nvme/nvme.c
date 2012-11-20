@@ -113,10 +113,23 @@ static ddi_dma_attr_t nvme_req_dma_attr = {
         4096,		                     /* dma_attr_align       */
         1,                              /* dma_attr_burstsizes  */
         1,                              /* dma_attr_minxfer     */
-	/* device limits IO transactions to page size */
-        0x4096ull,			/* dma_attr_maxxfer     */
+        (128 * 1024),			/* dma_attr_maxxfer     */
         0xFFFFFFFFFFFFFFFFull,          /* dma_attr_seg         */
-	/* no scatter-gather for now */
+        1,                              /* dma_attr_sgllen      */
+        1,                              /* dma_attr_granular    */
+  	0,
+};
+
+static ddi_dma_attr_t nvme_bd_dma_attr = {
+        DMA_ATTR_V0,                    /* dma_attr version     */
+        0,                              /* dma_attr_addr_lo     */
+        0xFFFFFFFFFFFFFFFFull,          /* dma_attr_addr_hi     */
+        0x00000000FFFFFFFFull,          /* dma_attr_count_max   */
+        4096,		                     /* dma_attr_align       */
+        1,                              /* dma_attr_burstsizes  */
+        1,                              /* dma_attr_minxfer     */
+        4096,				/* dma_attr_maxxfer     */
+        0xFFFFFFFFFFFFFFFFull,          /* dma_attr_seg         */
         2,                              /* dma_attr_sgllen      */
         1,                              /* dma_attr_granular    */
   	0,
@@ -153,34 +166,23 @@ nvme_dump_completion(struct nvme_completion *cpl)
 static void
 nvme_io_completed(void *arg, const struct nvme_completion *status, struct nvme_request *req)
 {
-	struct nvme_namespace *ns = arg;
-	bd_xfer_t *xfer = req->xfer;
-
-	/* FIXME!!! */
-	/* we are using only io queue 0 for now, however we allocate much more ioqs */
-	/* this needs to be fixed. we has to know which queue is in use */
-	nvme_free_request(&ns->ctrlr->ioq[0], req);
-
-	bd_xfer_done(xfer, 0);
-	printf("complete request 0x%p\n", xfer);
+	mutex_enter(&req->mutex);
+	cv_broadcast(&req->cv);
+	mutex_exit(&req->mutex);
 }
 	
 static int
 nvme_blk_read(void *arg, bd_xfer_t *xfer)
 {
 	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
-	struct nvme_request *req;
-	struct nvme_command *cmd;
 
-	int npages = 0;
-	void *data_start;
-	int data_len, i;
-
+#if 0
 	if (xfer->x_flags & BD_XFER_POLL)
 	{
 		printf("%s: polling mode is not supported\n", __FUNCTION__);
 		return EINVAL;
 	}
+#endif
 	if ((xfer->x_blkno + xfer->x_nblks) > nvme_ns_get_size(ns))	 
 		return EINVAL;
 
@@ -201,11 +203,13 @@ nvme_blk_write(void *arg, bd_xfer_t *xfer)
 	caddr_t data_start;
 	int data_len, i;
 
+#if 0
 	if (xfer->x_flags & BD_XFER_POLL)
 	{
 		printf("%s: polling mode is not supported\n", __FUNCTION__);
 		return EINVAL;
 	}
+#endif
 	if ((xfer->x_blkno + xfer->x_nblks) > ns->data.nsze)	 
 		return EINVAL;
 
@@ -227,7 +231,7 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	ddi_dma_handle_t dmah;
 
 	instance = ddi_get_instance(devinfo);
-	printf("nvme_attach is called!, rev 0.01\n");
+	printf("nvme_attach is called!, rev 0.05\n");
 
 	switch (cmd)
 	{
@@ -243,8 +247,17 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	
 	}
 	/* allocate softc structure in the DMAble memory */
-	(void)ddi_dma_alloc_handle(devinfo, &nvme_req_dma_attr, DDI_DMA_SLEEP, NULL, &dmah);
-	ddi_dma_mem_alloc(dmah, sizeof(* nvme), &nvme_dev_attr, IOMEM_DATA_UNCACHED, DDI_DMA_SLEEP, NULL, (char **)&nvme, &nvme_len, &dmaac);
+	if (ddi_dma_alloc_handle(devinfo, &nvme_req_dma_attr, DDI_DMA_SLEEP, NULL, &dmah) != DDI_SUCCESS)
+	{
+		dev_err(devinfo, CE_WARN, "cannot allocate DMA handle");
+		return DDI_FAILURE;
+	}
+	if (ddi_dma_mem_alloc(dmah, sizeof(* nvme), &nvme_dev_attr, IOMEM_DATA_UNCACHED, DDI_DMA_SLEEP, NULL, (char **)&nvme, &nvme_len, &dmaac) != DDI_SUCCESS)
+	{
+		ddi_dma_free_handle(&dmah);
+		dev_err(devinfo, CE_WARN, "cannot allocate DMA mem");
+		return DDI_FAILURE;
+	}
 
 	printf("nvme softc at %p\n", nvme);		
 	ddi_set_driver_private(devinfo, nvme);	
@@ -294,7 +307,7 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 
 		printf("NS at 0x%p\n", ns);
 
-		ns->bd_handle = bd_alloc_handle(ns, &nvme_blk_ops, &nvme_req_dma_attr, KM_SLEEP);
+		ns->bd_handle = bd_alloc_handle(ns, &nvme_blk_ops, &nvme_bd_dma_attr, KM_SLEEP);
 
 		ret = bd_attach_handle(devinfo, ns->bd_handle);
 		if (ret != DDI_SUCCESS)
@@ -327,7 +340,7 @@ nvme_detach(dev_info_t *devinfo, ddi_detach_cmd_t cmd)
 	return DDI_SUCCESS;
 }
 
-static int
+int
 nvme_quiesce(dev_info_t *dev)
 {
 	return -1;
@@ -336,7 +349,7 @@ nvme_quiesce(dev_info_t *dev)
 static int 
 nvme_blk_flush(void *arg, bd_xfer_t *xfer)
 {
-	return 0;
+	return nvme_blk_write(arg, xfer);
 }
 
 static void
@@ -348,14 +361,12 @@ nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
 	printf("%s: called!\n", __FUNCTION__);
 
 	/* it seems device does not support big requests */
-	drive->d_maxxfer = min(nvme_ns_get_max_io_xfer_size(ns), PAGESIZE);
-	drive->d_qsize = 2;
+	drive->d_maxxfer = DEV_BSIZE; 
+	drive->d_qsize = 1;
 	drive->d_removable = B_FALSE;
 	drive->d_hotpluggable = B_FALSE;
 	drive->d_target = 0;
 	drive->d_lun = ((char *)ns - (char *)&ns->ctrlr->ns[0]) / sizeof(struct nvme_namespace);
-	/* adjust d_maxxfer to be DEV_BSIZE aligned */
-	drive->d_maxxfer = (drive->d_maxxfer / DEV_BSIZE) * DEV_BSIZE;
 	printf("drive info: maxxfer size %d\n", drive->d_maxxfer);
 }
 
@@ -372,7 +383,7 @@ nvme_blk_mediainfo(void *arg, bd_media_t *media)
 	return 0;
 }
 
-static int
+int
 nvme_blk_devid_init(void *arg, dev_info_t *devinfo, ddi_devid_t *devid)
 {
 	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
@@ -417,7 +428,7 @@ int _info(struct modinfo *modinfop)
 }
 
 void
-nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_t *dmac, void *kaddr, size_t payload_size)
+nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_t *dmac, int dmac_size, void *kaddr, size_t payload_size)
 {
 	/* Let`s implement Scatter/Gather. Some days.. */
 	ddi_dma_cookie_t cookie[NVME_MAX_PRP_LIST_ENTRIES];
@@ -436,8 +447,13 @@ nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_
 	}
 	if (dmac)
 	{
-		printf("DMA coockie set. PRP1 at 0x%16x\n", (unsigned int)dmac->dmac_laddress);
 		tr->req->cmd.prp1 = dmac->dmac_laddress;
+		if (dmac_size == 2)
+		{
+			tr->req->cmd.prp2 = dmac[1].dmac_laddress;
+		}
+		else if (dmac_size > 2)
+			panic("cookie value is too big");
 	}
 	else
 	{
