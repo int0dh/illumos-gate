@@ -84,32 +84,27 @@
 #define CACHE_LINE_SIZE		(64)
 #endif
 
-struct nvme_request {
-
-	struct nvme_command		cmd;
-	void				*payload;
-	uint32_t			payload_size;
-	bd_xfer_t			*xfer; /* for now - one request - one xfer */
-	
-	kcondvar_t			cv;
-	kmutex_t			mutex;
-
-	nvme_cb_fn_t			cb_fn;
-	void				*cb_arg;
-	STAILQ_ENTRY(nvme_request)	stailq;
-	TAILQ_ENTRY(nvme_request)	rq_next; /* next in request queue */
-};
-
 struct nvme_tracker {
 
-	SLIST_ENTRY(nvme_tracker)	slist;
-	struct nvme_request		*req;
+//	SLIST_ENTRY(nvme_tracker)	slist;
+//	struct nvme_request		*req;
+	struct nvme_command		cmd;
 	struct nvme_qpair		*qpair;
+	kcondvar_t			cv;
+	kmutex_t			mutex;
+	nvme_cb_fn_t			cb_fn;
+	void				*cb_arg;
+	/* TODO: rework me! */
+	bd_xfer_t			*xfer;
+	void				*payload;
+	size_t				payload_size;
+	/* end of rework me */
 //	struct callout			timer;
 	uint16_t			cid;
 
-	uint64_t			prp[NVME_MAX_PRP_LIST_ENTRIES];
-	uint64_t			prp_bus_addr;
+/* we do not use S/G in the commands, so below is not required for us */
+//	uint64_t			prp[NVME_MAX_PRP_LIST_ENTRIES];
+//	uint64_t			prp_bus_addr;
 //	bus_dmamap_t			prp_dma_map;
 };
 
@@ -153,14 +148,18 @@ struct nvme_qpair {
 //	bus_dmamap_t		cpl_dma_map;
 	uint64_t		cpl_bus_addr;
 
-	SLIST_HEAD(, nvme_tracker)	free_tr;
-	STAILQ_HEAD(, nvme_request)	queued_req;
+//	SLIST_HEAD(, nvme_tracker)	free_tr;
+//	STAILQ_HEAD(, nvme_request)	queued_req;
 
-	TAILQ_HEAD(, nvme_request)	request_queue;
+//	TAILQ_HEAD(, nvme_request)	request_queue;
 	struct nvme_tracker	**act_tr;
-	struct nvme_tracker     *free_tr_mem;
-	lock_t		lock;
-	
+//	struct nvme_tracker     *free_tr_mem;
+
+	kmem_cache_t		*tracker_cache;
+	kmutex_t  mutex;
+	uint64_t 		allocated;	
+	unsigned int		soft_intr_pri;
+
 } __aligned(CACHE_LINE_SIZE);
 
 struct nvme_namespace {
@@ -208,7 +207,7 @@ struct nvme_controller {
 //	struct task		task;
 //	struct taskqueue	*taskqueue;
 
-	ddi_dma_handle_t	hw_desc_tag;
+//	ddi_dma_handle_t	hw_desc_tag;
 //	bus_dmamap_t		hw_desc_map;
 
 	/** maximum i/o size in bytes */
@@ -315,9 +314,9 @@ int	nvme_ctrlr_reset(struct nvme_controller *ctrlr);
 /* ctrlr defined as void * to allow use with config_intrhook. */
 int	nvme_ctrlr_start(void *ctrlr_arg);
 void	nvme_ctrlr_submit_admin_request(struct nvme_controller *ctrlr,
-					struct nvme_request *req);
+					struct nvme_tracker *tr);
 void	nvme_ctrlr_submit_io_request(struct nvme_controller *ctrlr,
-				     struct nvme_request *req);
+				     struct nvme_tracker *tr);
 
 int	nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 			     uint16_t vector, uint32_t num_entries,
@@ -327,7 +326,7 @@ void	nvme_qpair_submit_cmd(struct nvme_qpair *qpair,
 			      struct nvme_tracker *tr);
 void	nvme_qpair_process_completions(struct nvme_qpair *qpair);
 void	nvme_qpair_submit_request(struct nvme_qpair *qpair,
-				  struct nvme_request *req);
+				  struct nvme_tracker *tr);
 
 void	nvme_admin_qpair_destroy(struct nvme_qpair *qpair);
 
@@ -353,49 +352,46 @@ nvme_single_map(void *arg, bus_dma_segment_t *seg, int nseg, int error)
 }
 #endif
 
-static __inline struct nvme_request *
-nvme_allocate_request(struct nvme_qpair *q, void *payload, uint32_t payload_size, nvme_cb_fn_t cb_fn, void *cb_arg)
+static __inline struct nvme_tracker*
+nvme_allocate_tracker(struct nvme_qpair *q, void *payload, uint32_t payload_size, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
-	struct nvme_request *req = NULL;
+	struct nvme_tracker *tr;
+	int i;
 
-#if 0
-	req = kmem_zalloc(sizeof(* req), KM_NOSLEEP);
-	if (req == NULL)
-		return (NULL);
-#endif
-	lock_set(&q->lock);
-
-	if (TAILQ_EMPTY(&q->request_queue))
-	{
-		lock_clear(&q->lock);
+	tr = kmem_cache_alloc(q->tracker_cache, KM_NOSLEEP);
+	if (tr == NULL)
 		return NULL;
-	}
-	req = TAILQ_FIRST(&q->request_queue);
-	TAILQ_REMOVE(&q->request_queue, req, rq_next);
-	lock_clear(&q->lock);
 
-	memset(req, 0, sizeof(*req));
+	memset(&tr->cmd, 0, sizeof(struct nvme_command));
 
-	req->payload = payload;
-	req->payload_size = payload_size;
-	req->cb_fn = cb_fn;
-	req->cb_arg = cb_arg;
+	tr->payload = payload;
+	tr->payload_size = payload_size;
+	tr->cb_fn = cb_fn;
+	tr->cb_arg = cb_arg;
 
-	mutex_init(&req->mutex, NULL, MUTEX_DRIVER, NULL);
-	cv_init(&req->cv, NULL, CV_DRIVER, NULL);
-
-	printf("mutex at %p initialized!\n", &req->mutex);
-	return (req);
+	mutex_enter(&q->mutex);
+	for (i = 0; i < 64; i ++)
+	{
+		if (q->allocated & (1 << i))
+			continue;
+		tr->cid = i;
+		q->allocated |= (1 << i);
+		break;
+	} 
+	printf("cid %d allocated!\n", tr->cid);
+	mutex_exit(&q->mutex);
+	return tr;
 }
 
 static __inline void
-nvme_free_request(struct nvme_qpair *q, struct nvme_request *req)
+nvme_free_tracker(struct nvme_qpair *q, struct nvme_tracker *tr)
 {
-	mutex_destroy(&req->mutex);
-	cv_destroy(&req->cv);
+	printf("free request at 0x%p with cid %d\n", tr, tr->cid);
 
-	lock_set(&q->lock);
-	TAILQ_INSERT_HEAD(&q->request_queue, req, rq_next);
-	lock_clear(&q->lock);
+	mutex_enter(&q->mutex);
+	q->allocated &= ~(1 << tr->cid);
+	mutex_exit(&q->mutex);
+
+	kmem_cache_free(q->tracker_cache, tr);
 }
 #endif /* __NVME_PRIVATE_H__ */

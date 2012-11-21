@@ -164,11 +164,23 @@ nvme_dump_completion(struct nvme_completion *cpl)
 }
 
 static void
-nvme_io_completed(void *arg, const struct nvme_completion *status, struct nvme_request *req)
+nvme_io_completed(void *arg, const struct nvme_completion *status, struct nvme_tracker *tr)
 {
-	mutex_enter(&req->mutex);
-	cv_broadcast(&req->cv);
-	mutex_exit(&req->mutex);
+	bd_xfer_t *xfer = tr->xfer;
+	struct nvme_namespace *ns = arg;
+
+	nvme_free_tracker(&ns->ctrlr->ioq[0], tr);
+
+	if (xfer)
+	{
+		bd_xfer_done(xfer, 0);
+		printf("xfer at 0x%p completed\n", xfer);
+	}
+	else
+	{
+		printf("io callback called but xfer is NULL!\n");
+		kmdb_enter();
+	}
 }
 	
 static int
@@ -176,11 +188,11 @@ nvme_blk_read(void *arg, bd_xfer_t *xfer)
 {
 	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
 
-#if 0
+#if 1
 	if (xfer->x_flags & BD_XFER_POLL)
 	{
 		printf("%s: polling mode is not supported\n", __FUNCTION__);
-		return EINVAL;
+		return EIO;
 	}
 #endif
 	if ((xfer->x_blkno + xfer->x_nblks) > nvme_ns_get_size(ns))	 
@@ -203,16 +215,15 @@ nvme_blk_write(void *arg, bd_xfer_t *xfer)
 	caddr_t data_start;
 	int data_len, i;
 
-#if 0
 	if (xfer->x_flags & BD_XFER_POLL)
 	{
 		printf("%s: polling mode is not supported\n", __FUNCTION__);
-		return EINVAL;
+		return EIO;
 	}
-#endif
 	if ((xfer->x_blkno + xfer->x_nblks) > ns->data.nsze)	 
 		return EINVAL;
 
+	printf("write: xfer at 0x%p\n", xfer);
 	nvme_ns_cmd_write(ns, xfer, nvme_io_completed, ns);
 	/* TODO: wait for timeout, then cancel request and exit with error */
 	return DDI_SUCCESS; 
@@ -231,7 +242,7 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	ddi_dma_handle_t dmah;
 
 	instance = ddi_get_instance(devinfo);
-	printf("nvme_attach is called!, rev 0.05\n");
+	printf("nvme_attach is called!, rev 1.01\n");
 
 	switch (cmd)
 	{
@@ -349,6 +360,7 @@ nvme_quiesce(dev_info_t *dev)
 static int 
 nvme_blk_flush(void *arg, bd_xfer_t *xfer)
 {
+	printf("flush is invoked! xfer 0x%p\n", xfer);
 	return nvme_blk_write(arg, xfer);
 }
 
@@ -447,10 +459,10 @@ nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_
 	}
 	if (dmac)
 	{
-		tr->req->cmd.prp1 = dmac->dmac_laddress;
+		tr->cmd.prp1 = dmac->dmac_laddress;
 		if (dmac_size == 2)
 		{
-			tr->req->cmd.prp2 = dmac[1].dmac_laddress;
+			tr->cmd.prp2 = dmac[1].dmac_laddress;
 		}
 		else if (dmac_size > 2)
 			panic("cookie value is too big");
@@ -466,10 +478,10 @@ nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_
 			default:
 				panic("nvme_payload_map: cannot map DMA");
 		}
-		tr->req->cmd.prp1 = cookie[0].dmac_laddress;
+		tr->cmd.prp1 = cookie[0].dmac_laddress;
 		/* we do not support S/G, so panic when number of cookies is more than 2 */
 		if (cookie_count == 2)
-			tr->req->cmd.prp2 = cookie[1].dmac_laddress;
+			tr->cmd.prp2 = cookie[1].dmac_laddress;
 		else if (cookie_count > 2)
 			panic("nvme_payload_map: cookie_count > 2!\n");
 	}

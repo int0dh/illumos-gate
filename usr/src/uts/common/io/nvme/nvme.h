@@ -691,13 +691,11 @@ enum nvme_io_test_flags {
 
 #ifdef _KERNEL
 
-struct bio;
-
 struct nvme_namespace;
 struct nvme_consumer;
-struct nvme_request;
+struct nvme_tracker;
 
-typedef void (*nvme_cb_fn_t)(void *, const struct nvme_completion *, struct nvme_request *req);
+typedef void (*nvme_cb_fn_t)(void *, const struct nvme_completion *, struct nvme_tracker *tr);
 
 typedef void (*nvme_consumer_cb_fn_t)(void *, struct nvme_namespace *);
 
@@ -728,9 +726,6 @@ uint64_t	nvme_ns_get_size(struct nvme_namespace *ns);
 uint32_t	nvme_ns_get_flags(struct nvme_namespace *ns);
 const char *	nvme_ns_get_serial_number(struct nvme_namespace *ns);
 const char *	nvme_ns_get_model_number(struct nvme_namespace *ns);
-
-int	nvme_ns_bio_process(struct nvme_namespace *ns, struct bio *bp,
-			    nvme_cb_fn_t cb_fn);
 
 #endif /* _KERNEL */
 

@@ -45,139 +45,18 @@
 #include "nvme_private.h"
 
 static void
-nvme_ns_cb(void *arg, const struct nvme_completion *status, struct nvme_request *req)
+nvme_ns_cb(void *arg, const struct nvme_completion *status, struct nvme_tracker *tr)
 {
 	printf("nvme_ns_cb called\n");
 
+	mutex_enter(&tr->mutex);
+
 	memcpy(arg, status, sizeof(* status));
+	cv_broadcast(&tr->cv);
 
-	mutex_enter(&req->mutex);
-	cv_broadcast(&req->cv);
-	mutex_exit(&req->mutex);
-
+	mutex_exit(&tr->mutex);
 }
 
-#if 0
-static int
-nvme_ns_ioctl(struct cdev *cdev, u_long cmd, caddr_t arg, int flag,
-    struct thread *td)
-{
-	struct nvme_namespace	*ns;
-	struct nvme_controller	*ctrlr;
-	struct nvme_completion	cpl;
-	struct mtx		*mtx;
-
-	ns = cdev->si_drv1;
-	ctrlr = ns->ctrlr;
-
-	switch (cmd) {
-	case NVME_IDENTIFY_NAMESPACE:
-#ifdef CHATHAM2
-		/*
-		 * Don't refresh data on Chatham, since Chatham returns
-		 *  garbage on IDENTIFY anyways.
-		 */
-		if (pci_get_devid(ctrlr->dev) == CHATHAM_PCI_ID) {
-			memcpy(arg, &ns->data, sizeof(ns->data));
-			break;
-		}
-#endif
-		/* Refresh data before returning to user. */
-		mtx = mtx_pool_find(mtxpool_sleep, &cpl);
-		mtx_lock(mtx);
-		nvme_ctrlr_cmd_identify_namespace(ctrlr, ns->id, &ns->data,
-		    nvme_ns_cb, &cpl);
-		msleep(&cpl, mtx, PRIBIO, "nvme_ioctl", 0);
-		mtx_unlock(mtx);
-		if (cpl.sf_sc || cpl.sf_sct)
-			return (ENXIO);
-		memcpy(arg, &ns->data, sizeof(ns->data));
-		break;
-	case NVME_IO_TEST:
-	case NVME_BIO_TEST:
-		nvme_ns_test(ns, cmd, arg);
-		break;
-	case DIOCGMEDIASIZE:
-		*(off_t *)arg = (off_t)nvme_ns_get_size(ns);
-		break;
-	case DIOCGSECTORSIZE:
-		*(u_int *)arg = nvme_ns_get_sector_size(ns);
-		break;
-	default:
-		return (ENOTTY);
-	}
-
-	return (0);
-}
-
-static int
-nvme_ns_open(struct cdev *dev __unused, int flags, int fmt __unused,
-    struct thread *td)
-{
-	int error = 0;
-
-	if (flags & FWRITE)
-		error = securelevel_gt(td->td_ucred, 0);
-
-	return (error);
-}
-
-static int
-nvme_ns_close(struct cdev *dev __unused, int flags, int fmt __unused,
-    struct thread *td)
-{
-
-	return (0);
-}
-
-static void
-nvme_ns_strategy_done(void *arg, const struct nvme_completion *status)
-{
-	struct bio *bp = arg;
-
-	/*
-	 * TODO: add more extensive translation of NVMe status codes
-	 *  to different bio error codes (i.e. EIO, EINVAL, etc.)
-	 */
-	if (status->sf_sc || status->sf_sct) {
-		bp->bio_error = EIO;
-		bp->bio_flags |= BIO_ERROR;
-		bp->bio_resid = bp->bio_bcount;
-	} else
-		bp->bio_resid = 0;
-
-	biodone(bp);
-}
-
-static void
-nvme_ns_strategy(struct bio *bp)
-{
-	struct nvme_namespace	*ns;
-	int			err;
-
-	ns = bp->bio_dev->si_drv1;
-	err = nvme_ns_bio_process(ns, bp, nvme_ns_strategy_done);
-
-	if (err) {
-		bp->bio_error = err;
-		bp->bio_flags |= BIO_ERROR;
-		bp->bio_resid = bp->bio_bcount;
-		biodone(bp);
-	}
-
-}
-
-static struct cdevsw nvme_ns_cdevsw = {
-	.d_version =	D_VERSION,
-	.d_flags =	D_DISK,
-	.d_open =	nvme_ns_open,
-	.d_close =	nvme_ns_close,
-	.d_read =	nvme_ns_physio,
-	.d_write =	nvme_ns_physio,
-	.d_strategy =	nvme_ns_strategy,
-	.d_ioctl =	nvme_ns_ioctl
-};
-#endif
 uint32_t
 nvme_ns_get_max_io_xfer_size(struct nvme_namespace *ns)
 {
@@ -220,72 +99,6 @@ nvme_ns_get_model_number(struct nvme_namespace *ns)
 {
 	return ((const char *)ns->ctrlr->cdata.mn);
 }
-
-#if 0
-static void
-nvme_ns_bio_done(void *arg, const struct nvme_completion *status)
-{
-	struct bio	*bp = arg;
-	nvme_cb_fn_t	bp_cb_fn;
-
-	bp_cb_fn = bp->bio_driver1;
-
-	if (bp->bio_driver2)
-		free(bp->bio_driver2, M_NVME);
-
-	bp_cb_fn(bp, status);
-}
-int
-nvme_ns_bio_process(struct nvme_namespace *ns, struct bio *bp,
-	nvme_cb_fn_t cb_fn)
-{
-	struct nvme_dsm_range	*dsm_range;
-	int			err;
-
-	bp->bio_driver1 = cb_fn;
-
-	switch (bp->bio_cmd) {
-	case BIO_READ:
-		err = nvme_ns_cmd_read(ns, bp->bio_data,
-			bp->bio_offset/nvme_ns_get_sector_size(ns),
-			bp->bio_bcount/nvme_ns_get_sector_size(ns),
-			nvme_ns_bio_done, bp);
-		break;
-	case BIO_WRITE:
-		err = nvme_ns_cmd_write(ns, bp->bio_data,
-			bp->bio_offset/nvme_ns_get_sector_size(ns),
-			bp->bio_bcount/nvme_ns_get_sector_size(ns),
-			nvme_ns_bio_done, bp);
-		break;
-	case BIO_FLUSH:
-		err = nvme_ns_cmd_flush(ns, nvme_ns_bio_done, bp);
-		break;
-	case BIO_DELETE:
-		/*
-		 * Note: Chatham2 doesn't support DSM, so this code
-		 *  can't be fully tested yet.
-		 */
-		dsm_range =
-		    malloc(sizeof(struct nvme_dsm_range), M_NVME,
-		    M_ZERO | M_NOWAIT);
-		dsm_range->length =
-		    bp->bio_bcount/nvme_ns_get_sector_size(ns);
-		dsm_range->starting_lba =
-		    bp->bio_offset/nvme_ns_get_sector_size(ns);
-		bp->bio_driver2 = dsm_range;
-		err = nvme_ns_cmd_deallocate(ns, dsm_range, 1,
-			nvme_ns_bio_done, bp);
-		if (err != 0)
-			free(dsm_range, M_NVME);
-		break;
-	default:
-		err = EIO;
-		break;
-	}
-
-	return (err);
-}
-#endif
 
 int
 nvme_ns_construct(struct nvme_namespace *ns, uint16_t id,

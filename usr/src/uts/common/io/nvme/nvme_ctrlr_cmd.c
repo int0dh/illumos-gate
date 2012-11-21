@@ -49,13 +49,13 @@ void
 nvme_ctrlr_cmd_identify_controller(struct nvme_controller *ctrlr, void *payload,
 	nvme_cb_fn_t cb_fn, void *cb_arg)
 {
-	struct nvme_request *req;
 	struct nvme_command *cmd;
+	struct nvme_tracker *tr;
 
-	req = nvme_allocate_request(&ctrlr->adminq, payload,
+	tr = nvme_allocate_tracker(&ctrlr->adminq, payload,
 	    sizeof(struct nvme_controller_data), cb_fn, cb_arg);
 
-	cmd = &req->cmd;
+	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_IDENTIFY;
 
 	/*
@@ -64,20 +64,20 @@ nvme_ctrlr_cmd_identify_controller(struct nvme_controller *ctrlr, void *payload,
 	 */
 	cmd->cdw10 = 1;
 
-	nvme_ctrlr_submit_admin_request(ctrlr, req);
+	nvme_ctrlr_submit_admin_request(ctrlr, tr);
 }
 
 void
 nvme_ctrlr_cmd_identify_namespace(struct nvme_controller *ctrlr, uint16_t nsid,
 	void *payload, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
-	struct nvme_request *req;
+	struct nvme_tracker *tr;
 	struct nvme_command *cmd;
 
-	req = nvme_allocate_request(&ctrlr->adminq, payload,
+	tr = nvme_allocate_tracker(&ctrlr->adminq, payload,
 	    sizeof(struct nvme_namespace_data), cb_fn, cb_arg);
 
-	cmd = &req->cmd;
+	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_IDENTIFY;
 
 	/*
@@ -85,7 +85,7 @@ nvme_ctrlr_cmd_identify_namespace(struct nvme_controller *ctrlr, uint16_t nsid,
 	 */
 	cmd->nsid = nsid;
 
-	nvme_ctrlr_submit_admin_request(ctrlr, req);
+	nvme_ctrlr_submit_admin_request(ctrlr, tr);
 }
 
 void
@@ -93,15 +93,15 @@ nvme_ctrlr_cmd_create_io_cq(struct nvme_controller *ctrlr,
     struct nvme_qpair *io_que, uint16_t vector, nvme_cb_fn_t cb_fn,
     void *cb_arg)
 {
-	struct nvme_request *req;
+	struct nvme_tracker *tr;
 	struct nvme_command *cmd;
 
-	req = nvme_allocate_request(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
+	tr = nvme_allocate_tracker(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
 
-	if (req == NULL)
+	if (tr == NULL)
 		panic("cannot allocate request");
 
-	cmd = &req->cmd;
+	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_CREATE_IO_CQ;
 
 	/*
@@ -113,22 +113,22 @@ nvme_ctrlr_cmd_create_io_cq(struct nvme_controller *ctrlr,
 	cmd->cdw11 = (vector << 16) | 0x3;
 	cmd->prp1 = (uint64_t)io_que->cpl_bus_addr;
 
-	nvme_ctrlr_submit_admin_request(ctrlr, req);
+	nvme_ctrlr_submit_admin_request(ctrlr, tr);
 }
 
 void
 nvme_ctrlr_cmd_create_io_sq(struct nvme_controller *ctrlr,
     struct nvme_qpair *io_que, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
-	struct nvme_request *req;
+	struct nvme_tracker *tr;
 	struct nvme_command *cmd;
 
-	req = nvme_allocate_request(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
+	tr = nvme_allocate_tracker(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
 
-	if (req == NULL)
+	if (tr == NULL)
 		panic("cannot allocate request 2");
 
-	cmd = &req->cmd;
+	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_CREATE_IO_SQ;
 
 	/*
@@ -140,19 +140,19 @@ nvme_ctrlr_cmd_create_io_sq(struct nvme_controller *ctrlr,
 	cmd->cdw11 = (io_que->id << 16) | 0x1;
 	cmd->prp1 = (uint64_t)io_que->cmd_bus_addr;
 
-	nvme_ctrlr_submit_admin_request(ctrlr, req);
+	nvme_ctrlr_submit_admin_request(ctrlr, tr);
 }
 
 void
 nvme_ctrlr_cmd_delete_io_cq(struct nvme_controller *ctrlr,
     struct nvme_qpair *io_que, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
-	struct nvme_request *req;
+	struct nvme_tracker *tr;
 	struct nvme_command *cmd;
 
-	req = nvme_allocate_request(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
+	tr = nvme_allocate_tracker(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
 
-	cmd = &req->cmd;
+	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_DELETE_IO_CQ;
 
 	/*
@@ -161,19 +161,19 @@ nvme_ctrlr_cmd_delete_io_cq(struct nvme_controller *ctrlr,
 	 */
 	cmd->cdw10 = io_que->id;
 
-	nvme_ctrlr_submit_admin_request(ctrlr, req);
+	nvme_ctrlr_submit_admin_request(ctrlr, tr);
 }
 
 void
 nvme_ctrlr_cmd_delete_io_sq(struct nvme_controller *ctrlr,
     struct nvme_qpair *io_que, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
-	struct nvme_request *req;
+	struct nvme_tracker *tr;
 	struct nvme_command *cmd;
 
-	req = nvme_allocate_request(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
+	tr = nvme_allocate_tracker(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
 
-	cmd = &req->cmd;
+	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_DELETE_IO_SQ;
 
 	/*
@@ -182,7 +182,7 @@ nvme_ctrlr_cmd_delete_io_sq(struct nvme_controller *ctrlr,
 	 */
 	cmd->cdw10 = io_que->id;
 
-	nvme_ctrlr_submit_admin_request(ctrlr, req);
+	nvme_ctrlr_submit_admin_request(ctrlr, tr);
 }
 
 void
@@ -190,17 +190,17 @@ nvme_ctrlr_cmd_set_feature(struct nvme_controller *ctrlr, uint8_t feature,
     uint32_t cdw11, void *payload, uint32_t payload_size,
     nvme_cb_fn_t cb_fn, void *cb_arg)
 {
-	struct nvme_request *req;
+	struct nvme_tracker *tr;
 	struct nvme_command *cmd;
 
-	req = nvme_allocate_request(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
+	tr = nvme_allocate_tracker(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
 
-	cmd = &req->cmd;
+	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_SET_FEATURES;
 	cmd->cdw10 = feature;
 	cmd->cdw11 = cdw11;
 
-	nvme_ctrlr_submit_admin_request(ctrlr, req);
+	nvme_ctrlr_submit_admin_request(ctrlr, tr);
 }
 
 void
@@ -208,17 +208,17 @@ nvme_ctrlr_cmd_get_feature(struct nvme_controller *ctrlr, uint8_t feature,
     uint32_t cdw11, void *payload, uint32_t payload_size,
     nvme_cb_fn_t cb_fn, void *cb_arg)
 {
-	struct nvme_request *req;
+	struct nvme_tracker *tr;
 	struct nvme_command *cmd;
 
-	req = nvme_allocate_request(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
+	tr = nvme_allocate_tracker(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
 
-	cmd = &req->cmd;
+	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_GET_FEATURES;
 	cmd->cdw10 = feature;
 	cmd->cdw11 = cdw11;
 
-	nvme_ctrlr_submit_admin_request(ctrlr, req);
+	nvme_ctrlr_submit_admin_request(ctrlr, tr);
 }
 
 void
@@ -272,15 +272,15 @@ void
 nvme_ctrlr_cmd_asynchronous_event_request(struct nvme_controller *ctrlr,
     nvme_cb_fn_t cb_fn, void *cb_arg)
 {
-	struct nvme_request *req;
+	struct nvme_tracker *tr;
 	struct nvme_command *cmd;
 
-	req = nvme_allocate_request(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
+	tr = nvme_allocate_tracker(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
 
-	cmd = &req->cmd;
+	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_ASYNC_EVENT_REQUEST;
 
-	nvme_ctrlr_submit_admin_request(ctrlr, req);
+	nvme_ctrlr_submit_admin_request(ctrlr, tr);
 }
 
 void
@@ -288,16 +288,16 @@ nvme_ctrlr_cmd_get_health_information_page(struct nvme_controller *ctrlr,
     uint32_t nsid, struct nvme_health_information_page *payload,
     nvme_cb_fn_t cb_fn, void *cb_arg)
 {
-	struct nvme_request *req;
+	struct nvme_tracker *tr;
 	struct nvme_command *cmd;
 
-	req = nvme_allocate_request(&ctrlr->adminq, payload, sizeof(*payload), cb_fn, cb_arg);
+	tr = nvme_allocate_tracker(&ctrlr->adminq, payload, sizeof(*payload), cb_fn, cb_arg);
 
-	cmd = &req->cmd;
+	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_GET_LOG_PAGE;
 	cmd->nsid = nsid;
 	cmd->cdw10 = ((sizeof(*payload)/sizeof(uint32_t)) - 1) << 16;
 	cmd->cdw10 |= NVME_LOG_HEALTH_INFORMATION;
 
-	nvme_ctrlr_submit_admin_request(ctrlr, req);
+	nvme_ctrlr_submit_admin_request(ctrlr, tr);
 }

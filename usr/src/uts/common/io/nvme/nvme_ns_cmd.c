@@ -46,16 +46,16 @@
 int
 nvme_ns_cmd_read(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
-	struct nvme_request	*req;
+	struct nvme_tracker *tr;
 	struct nvme_command	*cmd;
 
-	req = nvme_allocate_request(&ns->ctrlr->ioq[0], xfer->x_kaddr, xfer->x_nblks*512, cb_fn, cb_arg);
+	tr = nvme_allocate_tracker(&ns->ctrlr->ioq[0], xfer->x_kaddr, xfer->x_nblks*512, cb_fn, cb_arg);
 
-	if (req == NULL)
+	if (tr == NULL)
 		return (ENOMEM);
-	req->xfer = xfer;
+	tr->xfer = xfer;
 
-	cmd = &req->cmd;
+	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_READ;
 	cmd->nsid = ns->id;
 
@@ -63,7 +63,7 @@ nvme_ns_cmd_read(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn,
 	*(uint64_t *)&cmd->cdw10 = xfer->x_blkno;
 	cmd->cdw12 = xfer->x_nblks - 1;
 
-	nvme_ctrlr_submit_io_request(ns->ctrlr, req);
+	nvme_ctrlr_submit_io_request(ns->ctrlr, tr);
 
 	return (0);
 }
@@ -71,17 +71,17 @@ nvme_ns_cmd_read(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn,
 int
 nvme_ns_cmd_write(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
-	struct nvme_request	*req;
+	struct nvme_tracker 	*tr;
 	struct nvme_command	*cmd;
 
-	req = nvme_allocate_request(&ns->ctrlr->ioq[0], xfer->x_kaddr, xfer->x_nblks*512, cb_fn, cb_arg);
+	tr = nvme_allocate_tracker(&ns->ctrlr->ioq[0], xfer->x_kaddr, xfer->x_nblks*512, cb_fn, cb_arg);
 
-	if (req == NULL)
+	if (tr == NULL)
 		return (ENOMEM);
 
-	req->xfer = xfer;
+	tr->xfer = xfer;
 
-	cmd = &req->cmd;
+	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_WRITE;
 	cmd->nsid = ns->id;
 
@@ -90,7 +90,7 @@ nvme_ns_cmd_write(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn
 
 	cmd->cdw12 = xfer->x_nblks - 1;
 
-	nvme_ctrlr_submit_io_request(ns->ctrlr, req);
+	nvme_ctrlr_submit_io_request(ns->ctrlr, tr);
 
 	return (0);
 }
@@ -99,16 +99,16 @@ int
 nvme_ns_cmd_deallocate(struct nvme_namespace *ns, void *payload,
     uint8_t num_ranges, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
-	struct nvme_request	*req;
+	struct nvme_tracker	*tr;
 	struct nvme_command	*cmd;
 
-	req = nvme_allocate_request(&ns->ctrlr->ioq[0], payload,
+	tr = nvme_allocate_tracker(&ns->ctrlr->ioq[0], payload,
 	    num_ranges * sizeof(struct nvme_dsm_range), cb_fn, cb_arg);
 
-	if (req == NULL)
+	if (tr == NULL)
 		return (ENOMEM);
 
-	cmd = &req->cmd;
+	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_DATASET_MANAGEMENT;
 	cmd->nsid = ns->id;
 
@@ -116,7 +116,7 @@ nvme_ns_cmd_deallocate(struct nvme_namespace *ns, void *payload,
 	cmd->cdw10 = num_ranges;
 	cmd->cdw11 = NVME_DSM_ATTR_DEALLOCATE;
 
-	nvme_ctrlr_submit_io_request(ns->ctrlr, req);
+	nvme_ctrlr_submit_io_request(ns->ctrlr, tr);
 
 	return (0);
 }
@@ -124,19 +124,19 @@ nvme_ns_cmd_deallocate(struct nvme_namespace *ns, void *payload,
 int
 nvme_ns_cmd_flush(struct nvme_namespace *ns, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
-	struct nvme_request	*req;
+	struct nvme_tracker	*tr;
 	struct nvme_command	*cmd;
 
-	req = nvme_allocate_request(&ns->ctrlr->ioq[0], NULL, 0, cb_fn, cb_arg);
+	tr = nvme_allocate_tracker(&ns->ctrlr->ioq[0], NULL, 0, cb_fn, cb_arg);
 
-	if (req == NULL)
+	if (tr == NULL)
 		return (ENOMEM);
 
-	cmd = &req->cmd;
+	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_FLUSH;
 	cmd->nsid = ns->id;
 
-	nvme_ctrlr_submit_io_request(ns->ctrlr, req);
+	nvme_ctrlr_submit_io_request(ns->ctrlr, tr);
 
 	return (0);
 }
