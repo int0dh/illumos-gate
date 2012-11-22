@@ -86,7 +86,7 @@
 
 struct nvme_tracker {
 
-//	SLIST_ENTRY(nvme_tracker)	slist;
+	TAILQ_ENTRY(nvme_tracker)	next;
 //	struct nvme_request		*req;
 	struct nvme_command		cmd;
 	struct nvme_qpair		*qpair;
@@ -100,6 +100,7 @@ struct nvme_tracker {
 	size_t				payload_size;
 	/* end of rework me */
 //	struct callout			timer;
+	timeout_id_t			timeout;
 	uint16_t			cid;
 
 /* we do not use S/G in the commands, so below is not required for us */
@@ -155,9 +156,11 @@ struct nvme_qpair {
 	struct nvme_tracker	**act_tr;
 //	struct nvme_tracker     *free_tr_mem;
 
-	kmem_cache_t		*tracker_cache;
-	kmutex_t  mutex;
-	uint64_t 		allocated;	
+	struct nvme_tracker	*trackers;
+	TAILQ_HEAD(, nvme_tracker)	free_trackers;
+
+	kmutex_t		free_trackers_mutex;
+	kmutex_t		hw_mutex;
 	unsigned int		soft_intr_pri;
 
 } __aligned(CACHE_LINE_SIZE);
@@ -352,15 +355,20 @@ nvme_single_map(void *arg, bus_dma_segment_t *seg, int nseg, int error)
 }
 #endif
 
-static __inline struct nvme_tracker*
+/*static*/__inline struct nvme_tracker*
 nvme_allocate_tracker(struct nvme_qpair *q, void *payload, uint32_t payload_size, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
 	struct nvme_tracker *tr;
-	int i;
 
-	tr = kmem_cache_alloc(q->tracker_cache, KM_NOSLEEP);
-	if (tr == NULL)
+	mutex_enter(&q->free_trackers_mutex);
+	if (TAILQ_EMPTY(&q->free_trackers))
+	{
+		mutex_exit(&q->free_trackers_mutex);
 		return NULL;
+	}
+	tr = TAILQ_FIRST(&q->free_trackers);
+	TAILQ_REMOVE(&q->free_trackers, tr, next);
+	mutex_exit(&q->free_trackers_mutex);
 
 	memset(&tr->cmd, 0, sizeof(struct nvme_command));
 
@@ -368,30 +376,30 @@ nvme_allocate_tracker(struct nvme_qpair *q, void *payload, uint32_t payload_size
 	tr->payload_size = payload_size;
 	tr->cb_fn = cb_fn;
 	tr->cb_arg = cb_arg;
-
-	mutex_enter(&q->mutex);
-	for (i = 0; i < 64; i ++)
-	{
-		if (q->allocated & (1 << i))
-			continue;
-		tr->cid = i;
-		q->allocated |= (1 << i);
-		break;
-	} 
-	printf("cid %d allocated!\n", tr->cid);
-	mutex_exit(&q->mutex);
+	tr->xfer = NULL;
+	tr->timeout = 0;
+	mutex_init(&tr->mutex, NULL, MUTEX_DRIVER, DDI_INTR_PRI(q->soft_intr_pri));
+	cv_init(&tr->cv, NULL, CV_DRIVER, NULL);
+	tr->qpair = q;
+	printf("cid %d allocated! xfer 0x%p\n", tr->cid, tr->xfer);
 	return tr;
 }
 
-static __inline void
+/*static*/ __inline void
 nvme_free_tracker(struct nvme_qpair *q, struct nvme_tracker *tr)
 {
 	printf("free request at 0x%p with cid %d\n", tr, tr->cid);
 
-	mutex_enter(&q->mutex);
-	q->allocated &= ~(1 << tr->cid);
-	mutex_exit(&q->mutex);
+	if (tr->timeout != 0)
+		(void)untimeout(tr->timeout);
 
-	kmem_cache_free(q->tracker_cache, tr);
+	q->act_tr[tr->cid] = NULL;
+
+	mutex_destroy(&tr->mutex);
+	cv_destroy(&tr->cv);
+	mutex_enter(&q->free_trackers_mutex);
+	TAILQ_INSERT_HEAD(&q->free_trackers, tr, next);
+	mutex_exit(&q->free_trackers_mutex);
+
 }
 #endif /* __NVME_PRIVATE_H__ */

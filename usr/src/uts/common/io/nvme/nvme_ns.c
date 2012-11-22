@@ -72,7 +72,6 @@ nvme_ns_get_sector_size(struct nvme_namespace *ns)
 uint64_t
 nvme_ns_get_num_sectors(struct nvme_namespace *ns)
 {
-	printf("data nsize %ld (first field)\n", (long)ns->data.nsze);
 	return (ns->data.nsze);
 }
 
@@ -112,7 +111,9 @@ nvme_ns_construct(struct nvme_namespace *ns, uint16_t id,
 
 	nvme_ctrlr_cmd_identify_namespace(ctrlr, id, &ns->data,
 		    nvme_ns_cb, &cpl);
-	if (cpl.sf_sc || cpl.sf_sct) {
+
+	if (cpl.sf_sc || cpl.sf_sct)
+	{
 		printf("nvme_identify_namespace failed!\n");
 		return (ENXIO);
 	}

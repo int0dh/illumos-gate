@@ -171,35 +171,31 @@ nvme_io_completed(void *arg, const struct nvme_completion *status, struct nvme_t
 
 	nvme_free_tracker(&ns->ctrlr->ioq[0], tr);
 
-	if (xfer)
-	{
-		bd_xfer_done(xfer, 0);
-		printf("xfer at 0x%p completed\n", xfer);
-	}
+	ASSERT(xfer == NULL);
+
+	if (status->sf_sc || status->sf_sct)
+		bd_xfer_done(xfer, EIO);
 	else
-	{
-		printf("io callback called but xfer is NULL!\n");
-		kmdb_enter();
-	}
+		bd_xfer_done(xfer, 0);
 }
 	
 static int
 nvme_blk_read(void *arg, bd_xfer_t *xfer)
 {
 	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
-
-#if 1
+	int ret;
 	if (xfer->x_flags & BD_XFER_POLL)
 	{
 		printf("%s: polling mode is not supported\n", __FUNCTION__);
 		return EIO;
 	}
-#endif
 	if ((xfer->x_blkno + xfer->x_nblks) > nvme_ns_get_size(ns))	 
 		return EINVAL;
 
 	printf("read: xfer at 0x%p\n", xfer);
-	nvme_ns_cmd_read(ns, xfer, nvme_io_completed, ns);
+	ret = nvme_ns_cmd_read(ns, xfer, nvme_io_completed, ns);
+	if (ret != 0)
+		bd_xfer_done(xfer, ret);
 	/* TODO: wait for timeout, then cancel request and return with error */
 	return DDI_SUCCESS; 
 }
@@ -208,12 +204,7 @@ static int
 nvme_blk_write(void *arg, bd_xfer_t *xfer)
 {
 	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
-	struct nvme_request *req;
-	struct nvme_command *cmd;
-
-	int npages = 0;
-	caddr_t data_start;
-	int data_len, i;
+	int ret;
 
 	if (xfer->x_flags & BD_XFER_POLL)
 	{
@@ -224,7 +215,9 @@ nvme_blk_write(void *arg, bd_xfer_t *xfer)
 		return EINVAL;
 
 	printf("write: xfer at 0x%p\n", xfer);
-	nvme_ns_cmd_write(ns, xfer, nvme_io_completed, ns);
+	ret = nvme_ns_cmd_write(ns, xfer, nvme_io_completed, ns);
+	if (ret != 0)
+		bd_xfer_done(xfer, ret);
 	/* TODO: wait for timeout, then cancel request and exit with error */
 	return DDI_SUCCESS; 
 }
@@ -243,6 +236,7 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 
 	instance = ddi_get_instance(devinfo);
 	printf("nvme_attach is called!, rev 1.01\n");
+	printf("instance %d\n", instance);
 
 	switch (cmd)
 	{
@@ -251,19 +245,23 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 		case DDI_RESUME:
 		case DDI_PM_RESUME:
 			dev_err(devinfo, CE_WARN, "resume is not supported");
-			ret = DDI_FAILURE;
-			goto exit;
+			return DDI_FAILURE;
 		default:
 			dev_err(devinfo, CE_WARN, "unknown cmd");
 	
 	}
 	/* allocate softc structure in the DMAble memory */
-	if (ddi_dma_alloc_handle(devinfo, &nvme_req_dma_attr, DDI_DMA_SLEEP, NULL, &dmah) != DDI_SUCCESS)
+	if (ddi_dma_alloc_handle(devinfo,
+				&nvme_req_dma_attr,
+				DDI_DMA_SLEEP, NULL, &dmah) != DDI_SUCCESS)
 	{
 		dev_err(devinfo, CE_WARN, "cannot allocate DMA handle");
 		return DDI_FAILURE;
 	}
-	if (ddi_dma_mem_alloc(dmah, sizeof(* nvme), &nvme_dev_attr, IOMEM_DATA_UNCACHED, DDI_DMA_SLEEP, NULL, (char **)&nvme, &nvme_len, &dmaac) != DDI_SUCCESS)
+	if (ddi_dma_mem_alloc(dmah,
+			sizeof(* nvme), &nvme_dev_attr,
+			IOMEM_DATA_UNCACHED, DDI_DMA_SLEEP, 
+			NULL, (char **)&nvme, &nvme_len, &dmaac) != DDI_SUCCESS)
 	{
 		ddi_dma_free_handle(&dmah);
 		dev_err(devinfo, CE_WARN, "cannot allocate DMA mem");
@@ -276,7 +274,8 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	nvme->dma_handle = dmah;
 
 	if (ddi_regs_map_setup(devinfo, 1, (caddr_t *)&nvme->nvme_regs_base,
-		0, 0, &nvme_dev_attr, &nvme->nvme_regs_handle) != DDI_SUCCESS)
+				0, 0, &nvme_dev_attr, 
+				&nvme->nvme_regs_handle) != DDI_SUCCESS)
 	{
 		printf("cannot map BAR register\n");
 		return DDI_FAILURE;
@@ -327,7 +326,6 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 			printf("failed to attach blkdev :((\n");
 		}
 	}
-exit:
 	return ret;
 }
 
@@ -370,16 +368,13 @@ nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
 	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
 	int blksize = nvme_ns_get_sector_size(ns);
 
-	printf("%s: called!\n", __FUNCTION__);
-
 	/* it seems device does not support big requests */
 	drive->d_maxxfer = DEV_BSIZE; 
-	drive->d_qsize = 1;
+	drive->d_qsize = 4;
 	drive->d_removable = B_FALSE;
 	drive->d_hotpluggable = B_FALSE;
-	drive->d_target = 0;
+	drive->d_target = ddi_get_instance(ns->ctrlr->devinfo); 
 	drive->d_lun = ((char *)ns - (char *)&ns->ctrlr->ns[0]) / sizeof(struct nvme_namespace);
-	printf("drive info: maxxfer size %d\n", drive->d_maxxfer);
 }
 
 static int
@@ -390,8 +385,6 @@ nvme_blk_mediainfo(void *arg, bd_media_t *media)
 	media->m_nblks = nvme_ns_get_num_sectors(ns); 
 	media->m_blksize = nvme_ns_get_sector_size(ns);
 	media->m_readonly = B_FALSE;
-
-	printf("media info: blksize %d nblks %ld\n", media->m_blksize, (long)media->m_nblks);
 	return 0;
 }
 
@@ -459,30 +452,32 @@ nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_
 	}
 	if (dmac)
 	{
+		ASSERT(dmac_size > 2);
+
 		tr->cmd.prp1 = dmac->dmac_laddress;
-		if (dmac_size == 2)
-		{
+		if (dmac_size > 1)
 			tr->cmd.prp2 = dmac[1].dmac_laddress;
-		}
-		else if (dmac_size > 2)
-			panic("cookie value is too big");
 	}
 	else
 	{
-		res = ddi_dma_addr_bind_handle(dmah, (struct as *)NULL, 
-			(caddr_t)kaddr, payload_size, DDI_DMA_RDWR | DDI_DMA_CONSISTENT, DDI_DMA_DONTWAIT, 0, cookie, &cookie_count);
+		res = ddi_dma_addr_bind_handle(dmah, (struct as *)NULL,
+						 (caddr_t)kaddr, payload_size,
+						DDI_DMA_RDWR | DDI_DMA_CONSISTENT,
+						DDI_DMA_DONTWAIT, 0, cookie,
+						&cookie_count);
 		switch (res)
 		{
 			case DDI_DMA_MAPPED:
 				break;
 			default:
+				/* shall we be more delicate here ? */
 				panic("nvme_payload_map: cannot map DMA");
 		}
+		ASSERT(cookie_count > 2);
+
 		tr->cmd.prp1 = cookie[0].dmac_laddress;
 		/* we do not support S/G, so panic when number of cookies is more than 2 */
-		if (cookie_count == 2)
+		if (cookie_count > 1)
 			tr->cmd.prp2 = cookie[1].dmac_laddress;
-		else if (cookie_count > 2)
-			panic("nvme_payload_map: cookie_count > 2!\n");
 	}
 }

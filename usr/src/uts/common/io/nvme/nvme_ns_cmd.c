@@ -80,7 +80,6 @@ nvme_ns_cmd_write(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn
 		return (ENOMEM);
 
 	tr->xfer = xfer;
-
 	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_WRITE;
 	cmd->nsid = ns->id;
