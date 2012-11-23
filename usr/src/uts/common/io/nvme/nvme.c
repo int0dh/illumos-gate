@@ -272,14 +272,14 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 			NULL, (char **)&nvme, &nvme_len, &dmaac) != DDI_SUCCESS)
 	{
 		dev_err(devinfo, CE_WARN, "cannot allocate DMA mem");
-		goto dma_free_handle;
+		goto dma_handle_free;
 	}
 	if (ddi_regs_map_setup(devinfo, 1, (caddr_t *)&nvme->nvme_regs_base,
 				0, 0, &nvme_dev_attr, 
 				&nvme->nvme_regs_handle) != DDI_SUCCESS)
 	{
 		dev_err(devinfo, CE_WARN, "cannot map registers");
-		goto free_dma_mem;
+		goto dma_mem_free;
 	}
 
 	ddi_set_driver_private(devinfo, nvme);	
@@ -339,9 +339,9 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	return DDI_SUCCESS;
 regs_map_free:
 	(void)ddi_regs_map_free(&nvme->nvme_regs_handle);
-free_dma_mem:
+dma_mem_free:
 	(void)ddi_dma_mem_free(&dmaac);
-dma_free_handle:
+dma_handle_free:
 	(void)ddi_dma_free_handle(&dmah);
 	return DDI_FAILURE;
 }
