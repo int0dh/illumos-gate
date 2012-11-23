@@ -44,9 +44,6 @@
 #include "nvme.h"
 #include "nvme_private.h"
 
-/* TODO: put this into softc structure */
-extern ddi_device_acc_attr_t nvme_dev_attr;
-
 extern int nvme_qpair_register_interrupt(struct nvme_qpair *q);
 
 static boolean_t
@@ -168,7 +165,8 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 	 */
 	qpair->phase = 1;
 
-	if (ctrlr->msix_enabled) {
+	if (ctrlr->msix_enabled)
+	{
 
 		/*
 		 * MSI-X vector resource IDs start at 1, so we add one to
@@ -185,8 +183,8 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 
 	res = ddi_dma_mem_alloc(qpair->ctrlr->dma_handle, 
 			qpair->num_entries * sizeof(struct nvme_command), 
-			&nvme_dev_attr, IOMEM_DATA_UNCACHED, DDI_DMA_SLEEP, 
-			NULL, (char **)&qpair->cmd, &len, 
+			qpair->ctrlr->devattr, IOMEM_DATA_UNCACHED,
+			DDI_DMA_SLEEP, NULL, (char **)&qpair->cmd, &len, 
 			&qpair->cmd_dma_acc_handle);
 
 	if (res != DDI_SUCCESS)
@@ -196,8 +194,8 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 
 	res = ddi_dma_mem_alloc(qpair->ctrlr->dma_handle, 
 			qpair->num_entries * sizeof(struct nvme_completion), 
-			&nvme_dev_attr, IOMEM_DATA_UNCACHED, DDI_DMA_SLEEP, 
-			NULL, (char **)&qpair->cpl, &len, 
+			qpair->ctrlr->devattr, IOMEM_DATA_UNCACHED,
+			DDI_DMA_SLEEP, NULL, (char **)&qpair->cpl, &len, 
 			&qpair->cpl_dma_acc_handle);
 
 	if (res != DDI_SUCCESS)
@@ -338,7 +336,8 @@ nvme_io_qpair_destroy(struct nvme_qpair *qpair)
 {
 	struct nvme_controller *ctrlr = qpair->ctrlr;
 
-	if (qpair->num_entries > 0) {
+	if (qpair->num_entries > 0)
+	{
 
 		nvme_ctrlr_cmd_delete_io_sq(ctrlr, qpair, nvme_free_cmd_ring,
 		    qpair);
@@ -413,10 +412,8 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_tracker *tr)
 		else
 			dmah =  tr->qpair->ctrlr->dma_handle;
 
-		nvme_payload_map(tr, dmah, dmac, dmac_size, tr->payload, tr->payload_size);
+		nvme_payload_map(tr, dmah, dmac, dmac_size,
+				tr->payload, tr->payload_size);
 	}
-	if (tr->xfer)
-		printf("submit IO request with xfer at 0x%p\n", tr->xfer);
-
 	nvme_qpair_submit_cmd(tr->qpair, tr);
 }

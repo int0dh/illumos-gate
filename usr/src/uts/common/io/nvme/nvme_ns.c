@@ -47,8 +47,6 @@
 static void
 nvme_ns_cb(void *arg, const struct nvme_completion *status, struct nvme_tracker *tr)
 {
-	printf("nvme_ns_cb called\n");
-
 	mutex_enter(&tr->mutex);
 
 	memcpy(arg, status, sizeof(* status));

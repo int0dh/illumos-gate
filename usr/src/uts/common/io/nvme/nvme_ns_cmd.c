@@ -47,12 +47,13 @@ int
 nvme_ns_cmd_read(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
 	struct nvme_tracker *tr;
-	struct nvme_command	*cmd;
+	struct nvme_command *cmd;
 
 	tr = nvme_allocate_tracker(&ns->ctrlr->ioq[0], xfer->x_kaddr, xfer->x_nblks*512, cb_fn, cb_arg);
 
 	if (tr == NULL)
 		return (ENOMEM);
+
 	tr->xfer = xfer;
 
 	cmd = &tr->cmd;

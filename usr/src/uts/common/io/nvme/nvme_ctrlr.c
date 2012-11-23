@@ -55,8 +55,6 @@ nvme_ctrlr_cb(void *arg, const struct nvme_completion *status, struct nvme_track
 {
 	struct nvme_completion	*cpl = arg;
 
-	printf("callback %s called! tr at 0x%p\n", __func__, tr);
-
 	/*
 	 * Copy status into the argument passed by the caller, so that
 	 *  the caller can check the status to determine if the
@@ -65,6 +63,7 @@ nvme_ctrlr_cb(void *arg, const struct nvme_completion *status, struct nvme_track
 	mutex_enter(&tr->mutex);
 	memcpy(cpl, status, sizeof(*cpl));
 
+	/* notify about admin command completion */
 	cv_broadcast(&tr->cv);
 	mutex_exit(&tr->mutex);
 }
@@ -277,7 +276,6 @@ nvme_ctrlr_identify(struct nvme_controller *ctrlr)
 	if (cpl.sf_sc || cpl.sf_sct) 
 		return (ENXIO);
 
-	printf("nvme->cdata.vid = %04x\n", ctrlr->cdata.vid);
 	return (DDI_SUCCESS);
 }
 
@@ -329,14 +327,12 @@ nvme_ctrlr_create_qpairs(struct nvme_controller *ctrlr)
 	{
 		qpair = &ctrlr->ioq[i];
 
-		printf("create IO cq!!!!\n");
 		nvme_ctrlr_cmd_create_io_cq(ctrlr, qpair, qpair->vector,
 		    nvme_ctrlr_cb, &cpl);
 
 		if (cpl.sf_sc || cpl.sf_sct)
 			return (ENXIO);
 
-		printf("create IO sq!!!\n");
 		nvme_ctrlr_cmd_create_io_sq(qpair->ctrlr, qpair,
 		    nvme_ctrlr_cb, &cpl);
 
@@ -352,14 +348,13 @@ nvme_ctrlr_construct_namespaces(struct nvme_controller *ctrlr)
 	struct nvme_namespace	*ns;
 	int			i, status;
 
-	printf("ctrlr->cdata.nn is %d!\n", ctrlr->cdata.nn);
+	/* one NVMe may have a few namespaces. Identify each */
 	for (i = 0; i < ctrlr->cdata.nn; i++)
 	{
 		ns = &ctrlr->ns[i];
 		status = nvme_ns_construct(ns, i + 1, ctrlr);
 		if (status != 0)
 			return (status);
-		printf("namespace %d exist!\n", i);
 	}
 	return 0;
 }
@@ -428,7 +423,8 @@ nvme_ctrlr_start(void *ctrlr_arg)
 	return 0;
 }
 
-/* TODO: we need one handler per io qpair. how can we get vector number? */
+/* This code has to be reworked for MSI/MSI-X. In this case one handler */
+/* will process olny one qpair */
 static uint_t
 nvme_ctrlr_softintr_handler(char *arg, char *unused)
 {
@@ -468,14 +464,12 @@ nvme_ctrlr_intx_handler(char *arg, char *unused)
 void
 nvme_interrupt_enable(struct nvme_controller *nvme)
 {
-	printf("ddi_intr_enable interrupt!\n");
 	ddi_intr_enable(nvme->intr_handle[0]);
 }
 
 void
 nvme_interrupt_disable(struct nvme_controller *nvme)
 {
-	printf("disable NVMe interrupt\n");
 	ddi_intr_disable(nvme->intr_handle[0]);
 }
 
@@ -539,7 +533,7 @@ nvme_register_interrupts(struct nvme_controller *nvme, int intr_type)
 	ddi_intr_add_handler(nvme->intr_handle[0], nvme_ctrlr_intx_handler, (caddr_t)&nvme->adminq, NULL);
 	ddi_intr_add_softint(nvme->devinfo, &nvme->soft_intr_handle[0], DDI_INTR_SOFTPRI_MAX, nvme_ctrlr_softintr_handler, (caddr_t)&nvme->adminq);
 	nvme->adminq.soft_intr_handle = &nvme->soft_intr_handle[0];
-	/* dirty */
+
 	ddi_intr_get_softint_pri(*nvme->adminq.soft_intr_handle, &nvme->adminq.soft_intr_pri);
 
 	printf("soft intr priority is %d\n", nvme->adminq.soft_intr_pri);

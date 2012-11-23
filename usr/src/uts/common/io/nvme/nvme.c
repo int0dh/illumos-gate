@@ -50,25 +50,29 @@ static int nvme_blk_write(void *arg, bd_xfer_t *xfer);
 static void nvme_blk_driveinfo(void *, bd_drive_t *);
 static int  nvme_blk_mediainfo(void *, bd_media_t *);
 static int  nvme_blk_devid_init(void *, dev_info_t *, ddi_devid_t *);
+#if 0
 static int  nvme_blk_flush(void *, bd_xfer_t *xfer);
+#endif
 
 static char nvme_ident[] = "NVMe block driver";
 
-static bd_ops_t nvme_blk_ops = {
+static bd_ops_t nvme_blk_ops =
+{
 	.o_version = BD_OPS_VERSION_0,
 	.o_drive_info = nvme_blk_driveinfo,
 	.o_media_info = nvme_blk_mediainfo,
 	.o_devid_init = nvme_blk_devid_init,
-	.o_sync_cache = nvme_blk_flush,
+	.o_sync_cache = NULL,
 	.o_read = nvme_blk_read,
 	.o_write = nvme_blk_write,
 };
 
-static int nvme_attach(dev_info_t *dev, ddi_attach_cmd_t cmd);
-static int nvme_detach(dev_info_t *dev, ddi_detach_cmd_t cmd);
+int nvme_attach(dev_info_t *dev, ddi_attach_cmd_t cmd);
+int nvme_detach(dev_info_t *dev, ddi_detach_cmd_t cmd);
 static int nvme_quiesce(dev_info_t *);
 
-static struct dev_ops nvme_dev_ops = {
+static struct dev_ops nvme_dev_ops =
+{
 	.devo_rev = DEVO_REV,
 	.devo_refcnt = 0,
 	.devo_getinfo = ddi_no_info,
@@ -85,27 +89,31 @@ static struct dev_ops nvme_dev_ops = {
 
 extern struct mod_ops mod_driverops;
 
-static struct modldrv modldrv = {
+static struct modldrv modldrv =
+{
 	.drv_modops = &mod_driverops,
 	.drv_linkinfo = nvme_ident,
 	.drv_dev_ops = &nvme_dev_ops
 }; 
 
-static struct modlinkage modlinkage = {
+static struct modlinkage modlinkage =
+{
 	.ml_rev = MODREV_1,
 	.ml_linkage[0] = (void *)&modldrv,
 	.ml_linkage[1] = NULL,
 };
 
-ddi_device_acc_attr_t nvme_dev_attr = {
-	DDI_DEVICE_ATTR_V0,
-	DDI_NEVERSWAP_ACC,
-	DDI_STORECACHING_OK_ACC,
-	DDI_DEFAULT_ACC
+static ddi_device_acc_attr_t nvme_dev_attr =
+{
+	.devacc_attr_version = DDI_DEVICE_ATTR_V0,
+	.devacc_attr_endian_flags = DDI_NEVERSWAP_ACC,
+	.devacc_attr_dataorder = DDI_STORECACHING_OK_ACC,
+	.devacc_attr_access = DDI_DEFAULT_ACC
 };
 
 /* DMA attributes */
-static ddi_dma_attr_t nvme_req_dma_attr = {
+static ddi_dma_attr_t nvme_req_dma_attr =
+{
         DMA_ATTR_V0,                    /* dma_attr version     */
         0,                              /* dma_attr_addr_lo     */
         0xFFFFFFFFFFFFFFFFull,          /* dma_attr_addr_hi     */
@@ -120,7 +128,8 @@ static ddi_dma_attr_t nvme_req_dma_attr = {
   	0,
 };
 
-static ddi_dma_attr_t nvme_bd_dma_attr = {
+static ddi_dma_attr_t nvme_bd_dma_attr =
+{
         DMA_ATTR_V0,                    /* dma_attr version     */
         0,                              /* dma_attr_addr_lo     */
         0xFFFFFFFFFFFFFFFFull,          /* dma_attr_addr_hi     */
@@ -163,12 +172,15 @@ nvme_dump_completion(struct nvme_completion *cpl)
 #endif
 }
 
+/* IO operation completed */
 static void
 nvme_io_completed(void *arg, const struct nvme_completion *status, struct nvme_tracker *tr)
 {
 	bd_xfer_t *xfer = tr->xfer;
 	struct nvme_namespace *ns = arg;
 
+	/* release the tracker. If the operation completed with error,
+	*  complete blkdev request with EIO */
 	nvme_free_tracker(&ns->ctrlr->ioq[0], tr);
 
 	ASSERT(xfer == NULL);
@@ -184,15 +196,16 @@ nvme_blk_read(void *arg, bd_xfer_t *xfer)
 {
 	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
 	int ret;
+
 	if (xfer->x_flags & BD_XFER_POLL)
-	{
-		printf("%s: polling mode is not supported\n", __FUNCTION__);
 		return EIO;
-	}
+
 	if ((xfer->x_blkno + xfer->x_nblks) > nvme_ns_get_size(ns))	 
 		return EINVAL;
 
-	printf("read: xfer at 0x%p\n", xfer);
+	/* issue READ cmd, put it into the NVMe command queue */
+	/* after command completiom the nvme_io_completed callback */
+	/* will be called */
 	ret = nvme_ns_cmd_read(ns, xfer, nvme_io_completed, ns);
 	if (ret != 0)
 		bd_xfer_done(xfer, ret);
@@ -207,14 +220,12 @@ nvme_blk_write(void *arg, bd_xfer_t *xfer)
 	int ret;
 
 	if (xfer->x_flags & BD_XFER_POLL)
-	{
-		printf("%s: polling mode is not supported\n", __FUNCTION__);
 		return EIO;
-	}
+
 	if ((xfer->x_blkno + xfer->x_nblks) > ns->data.nsze)	 
 		return EINVAL;
-
-	printf("write: xfer at 0x%p\n", xfer);
+	
+	/* issue WRITE command and put it into NVMe command queue */
 	ret = nvme_ns_cmd_write(ns, xfer, nvme_io_completed, ns);
 	if (ret != 0)
 		bd_xfer_done(xfer, ret);
@@ -222,7 +233,7 @@ nvme_blk_write(void *arg, bd_xfer_t *xfer)
 	return DDI_SUCCESS; 
 }
 
-static int
+int
 nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 {
 	int ret = DDI_SUCCESS;
@@ -248,7 +259,8 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 			return DDI_FAILURE;
 		default:
 			dev_err(devinfo, CE_WARN, "unknown cmd");
-	
+			return DDI_FAILURE; 
+				
 	}
 	/* allocate softc structure in the DMAble memory */
 	if (ddi_dma_alloc_handle(devinfo,
@@ -268,7 +280,6 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 		return DDI_FAILURE;
 	}
 
-	printf("nvme softc at %p\n", nvme);		
 	ddi_set_driver_private(devinfo, nvme);	
 
 	nvme->dma_handle = dmah;
@@ -280,11 +291,11 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 		printf("cannot map BAR register\n");
 		return DDI_FAILURE;
 	}
-	printf("BAR register mapped ok!\n");
-	printf("nvme version register is 0x%08x\n", nvme_mmio_read_4(nvme, vs));
 
 	nvme->devinfo = devinfo;
+	nvme->devattr = &nvme_dev_attr;
 
+	/* TODO: release resources after each failure */
 	ret = nvme_ctrlr_construct(nvme);
 	if (ret != 0)
 	{
@@ -292,7 +303,6 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 		return ENXIO;
 	}
 	ret = nvme_ctrlr_reset(nvme);
-	/* TODO: release resources after each failure */
 	if (ret != 0)
 	{
 		printf("cannot reset controller!\n");
@@ -329,7 +339,7 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	return ret;
 }
 
-static int
+int
 nvme_detach(dev_info_t *devinfo, ddi_detach_cmd_t cmd)
 {
 	struct nvme_controller *nvme = NULL;
@@ -355,12 +365,14 @@ nvme_quiesce(dev_info_t *dev)
 	return -1;
 }
 
+#if 0
 static int 
 nvme_blk_flush(void *arg, bd_xfer_t *xfer)
 {
 	printf("flush is invoked! xfer 0x%p\n", xfer);
 	return nvme_blk_write(arg, xfer);
 }
+#endif
 
 static void
 nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
@@ -440,11 +452,12 @@ nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_
 	uint_t cookie_count, cur_nseg;
 	int res;
 	/*
-	 * Note that we specified PAGE_SIZE for alignment and max
+	 * Note that we specified PAGESIZE for alignment and max
 	 *  segment size when creating the bus dma tags.  So here
 	 *  we can safely just transfer each segment to its
 	 *  associated PRP entry.
 	 */
+	/* we do not use S/G, so only prp1 and prp2 needs to be set up */
 	if (tr->qpair == NULL)
 	{
 		printf("%s: wrong tracker (qpair == NULL)\n", __FUNCTION__);
@@ -476,7 +489,7 @@ nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_
 		ASSERT(cookie_count > 2);
 
 		tr->cmd.prp1 = cookie[0].dmac_laddress;
-		/* we do not support S/G, so panic when number of cookies is more than 2 */
+
 		if (cookie_count > 1)
 			tr->cmd.prp2 = cookie[1].dmac_laddress;
 	}
