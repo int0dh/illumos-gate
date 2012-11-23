@@ -172,6 +172,7 @@ struct nvme_controller {
 	dev_info_t		*devinfo;
 	ddi_device_acc_attr_t   *devattr;
 	ddi_dma_handle_t        dma_handle;
+	ddi_acc_handle_t	dma_acc;
 	dev_info_t		*dev;
 	int			nvme_nbloks;
 	ddi_intr_handle_t	*intr_handle;

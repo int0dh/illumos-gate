@@ -236,18 +236,14 @@ nvme_blk_write(void *arg, bd_xfer_t *xfer)
 int
 nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 {
-	int ret = DDI_SUCCESS;
 	int instance, i;
-
+	int ret;
 	struct nvme_controller *nvme = NULL;	
 	size_t nvme_len = sizeof(*nvme);
-
 	ddi_acc_handle_t dmaac;
 	ddi_dma_handle_t dmah;
 
 	instance = ddi_get_instance(devinfo);
-	printf("nvme_attach is called!, rev 1.01\n");
-	printf("instance %d\n", instance);
 
 	switch (cmd)
 	{
@@ -275,49 +271,47 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 			IOMEM_DATA_UNCACHED, DDI_DMA_SLEEP, 
 			NULL, (char **)&nvme, &nvme_len, &dmaac) != DDI_SUCCESS)
 	{
-		ddi_dma_free_handle(&dmah);
 		dev_err(devinfo, CE_WARN, "cannot allocate DMA mem");
-		return DDI_FAILURE;
+		goto dma_free_handle;
+	}
+	if (ddi_regs_map_setup(devinfo, 1, (caddr_t *)&nvme->nvme_regs_base,
+				0, 0, &nvme_dev_attr, 
+				&nvme->nvme_regs_handle) != DDI_SUCCESS)
+	{
+		dev_err(devinfo, CE_WARN, "cannot map registers");
+		goto free_dma_mem;
 	}
 
 	ddi_set_driver_private(devinfo, nvme);	
 
 	nvme->dma_handle = dmah;
-
-	if (ddi_regs_map_setup(devinfo, 1, (caddr_t *)&nvme->nvme_regs_base,
-				0, 0, &nvme_dev_attr, 
-				&nvme->nvme_regs_handle) != DDI_SUCCESS)
-	{
-		printf("cannot map BAR register\n");
-		return DDI_FAILURE;
-	}
+	nvme->dma_acc	= dmaac;
 
 	nvme->devinfo = devinfo;
 	nvme->devattr = &nvme_dev_attr;
 
-	/* TODO: release resources after each failure */
 	ret = nvme_ctrlr_construct(nvme);
 	if (ret != 0)
 	{
-		printf("cannot initialize controller!\n");
-		return ENXIO;
+		dev_err(devinfo, CE_WARN, "cannot construct controller!");
+		goto regs_map_free;
 	}
 	ret = nvme_ctrlr_reset(nvme);
 	if (ret != 0)
 	{
-		printf("cannot reset controller!\n");
-		return ENXIO;
+		dev_err(devinfo, CE_WARN, "cannot reset controller!");
+		goto regs_map_free;
 	} 
 	ret = nvme_ctrlr_reset(nvme);
 	if (ret != 0)
 	{
-		printf("cannot reset controller!\n");
-		return ENXIO;
+		dev_err(devinfo, CE_WARN, "cannot reset controller (again)");
+		goto regs_map_free;
 	}
 	if (nvme_ctrlr_start(nvme) != 0)
 	{
-		printf("cannot start controller!\n");
-		return ENXIO;
+		dev_err(devinfo, CE_WARN, "cannot start controller");
+		goto regs_map_free;
 	}
 	printf("%d LUNs. allocate blkdev handle\n", nvme->cdata.nn);
 
@@ -325,18 +319,31 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	{
 		struct nvme_namespace *ns = &nvme->ns[i];
 
-		printf("NS at 0x%p\n", ns);
-
 		ns->bd_handle = bd_alloc_handle(ns, &nvme_blk_ops, &nvme_bd_dma_attr, KM_SLEEP);
 
 		ret = bd_attach_handle(devinfo, ns->bd_handle);
+
 		if (ret != DDI_SUCCESS)
 		{
-			/* FIXME: shall we free some resources ? */
-			printf("failed to attach blkdev :((\n");
+			int j;
+			/* Ok. detach/release already allocated blkdev handles */
+			for (j = 0; j < i; j ++)
+			{
+				struct nvme_namespace *n = &nvme->ns[j];
+				(void)bd_detach_handle(n->bd_handle);
+				(void)bd_free_handle(n->bd_handle);
+			}
+			goto regs_map_free;
 		}
 	}
-	return ret;
+	return DDI_SUCCESS;
+regs_map_free:
+	(void)ddi_regs_map_free(&nvme->nvme_regs_handle);
+free_dma_mem:
+	(void)ddi_dma_mem_free(&dmaac);
+dma_free_handle:
+	(void)ddi_dma_free_handle(&dmah);
+	return DDI_FAILURE;
 }
 
 int
@@ -344,18 +351,39 @@ nvme_detach(dev_info_t *devinfo, ddi_detach_cmd_t cmd)
 {
 	struct nvme_controller *nvme = NULL;
 	int i = 0;
+	ddi_dma_handle_t dmah;
+	ddi_acc_handle_t dmaac;
+
 	nvme = (struct nvme_controller *)ddi_get_driver_private(devinfo);
 
+	dmah = nvme->dma_handle;
+	dmaac = nvme->dma_acc;
+ 
+	/* detach/free blkdev handles, we are going to off-line */
 	for (i = 0; i < nvme->cdata.nn; i ++)
 	{
 		struct nvme_namespace *ns = &nvme->ns[i];
 
-		if (bd_detach_handle(ns->bd_handle) != DDI_SUCCESS)
-		{
-			printf("cannot detach blkdev handle :(\n");
-			return DDI_FAILURE;
-		}
+		(void)bd_detach_handle(ns->bd_handle);
+		(void)bd_free_handle(ns->bd_handle);
 	}
+	/* destroy IO qpairs first */
+	for (i = 0; i < nvme->num_io_queues; i ++)
+	{
+		struct nvme_qpair *q = &nvme->ioq[i];
+		nvme_io_qpair_destroy(q);
+	}
+	/* then destroy admin qpair */	
+	nvme_admin_qpair_destroy(&nvme->adminq);
+	/* disable interrupts */
+	nvme_interrupt_disable(nvme);
+	/* unmap PCI registers */	
+	(void)ddi_regs_map_free(&nvme->nvme_regs_handle);
+	/* release softc */
+	(void)ddi_dma_mem_free(&dmaac);
+	/* release DMA handle */
+	(void)ddi_dma_free_handle(&dmah);
+
 	return DDI_SUCCESS;
 }
 
@@ -378,11 +406,13 @@ static void
 nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
 {
 	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
-	int blksize = nvme_ns_get_sector_size(ns);
 
-	/* it seems device does not support big requests */
-	drive->d_maxxfer = DEV_BSIZE; 
-	drive->d_qsize = 4;
+	ASSERT(ns->ctrlr->cdata.nn == 0);
+
+	drive->d_maxxfer = nvme_ns_get_max_io_xfer_size(ns); 
+	/* let`s assume that a few namespaces share one IO qpair */
+	/* that is true in the worst case */
+	drive->d_qsize = NVME_IO_ENTRIES / ns->ctrlr->cdata.nn;
 	drive->d_removable = B_FALSE;
 	drive->d_hotpluggable = B_FALSE;
 	drive->d_target = ddi_get_instance(ns->ctrlr->devinfo); 
@@ -457,12 +487,10 @@ nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_
 	 *  we can safely just transfer each segment to its
 	 *  associated PRP entry.
 	 */
+	ASSERT(tr == NULL);
+	ASSERT(tr->qpair == NULL);
+
 	/* we do not use S/G, so only prp1 and prp2 needs to be set up */
-	if (tr->qpair == NULL)
-	{
-		printf("%s: wrong tracker (qpair == NULL)\n", __FUNCTION__);
-		return;
-	}
 	if (dmac)
 	{
 		ASSERT(dmac_size > 2);
