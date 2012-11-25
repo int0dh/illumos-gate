@@ -50,9 +50,7 @@ static int nvme_blk_write(void *arg, bd_xfer_t *xfer);
 static void nvme_blk_driveinfo(void *, bd_drive_t *);
 static int  nvme_blk_mediainfo(void *, bd_media_t *);
 static int  nvme_blk_devid_init(void *, dev_info_t *, ddi_devid_t *);
-#if 0
 static int  nvme_blk_flush(void *, bd_xfer_t *xfer);
-#endif
 
 static char nvme_ident[] = "NVMe block driver";
 
@@ -183,7 +181,7 @@ nvme_io_completed(void *arg, const struct nvme_completion *status, struct nvme_t
 	*  complete blkdev request with EIO */
 	nvme_free_tracker(&ns->ctrlr->ioq[0], tr);
 
-	ASSERT(xfer == NULL);
+	ASSERT(xfer != NULL);
 
 	if (status->sf_sc || status->sf_sct)
 		bd_xfer_done(xfer, EIO);
@@ -231,6 +229,22 @@ nvme_blk_write(void *arg, bd_xfer_t *xfer)
 		bd_xfer_done(xfer, ret);
 	/* TODO: wait for timeout, then cancel request and exit with error */
 	return DDI_SUCCESS; 
+}
+
+static int 
+nvme_blk_flush(void *arg, bd_xfer_t *xfer)
+{
+	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
+	int ret;
+
+	if (xfer->x_flags & BD_XFER_POLL)
+		return EIO;
+
+	ret = nvme_ns_cmd_flush(ns, xfer, nvme_io_completed, ns);
+	if (ret != 0)
+		bd_xfer_done(xfer, ret);
+
+	return DDI_SUCCESS;
 }
 
 int
@@ -393,21 +407,13 @@ nvme_quiesce(dev_info_t *dev)
 	return -1;
 }
 
-#if 0
-static int 
-nvme_blk_flush(void *arg, bd_xfer_t *xfer)
-{
-	printf("flush is invoked! xfer 0x%p\n", xfer);
-	return nvme_blk_write(arg, xfer);
-}
-#endif
 
 static void
 nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
 {
 	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
 
-	ASSERT(ns->ctrlr->cdata.nn == 0);
+	ASSERT(ns->ctrlr->cdata.nn != 0);
 
 	drive->d_maxxfer = nvme_ns_get_max_io_xfer_size(ns); 
 	/* let`s assume that a few namespaces share one IO qpair */
@@ -487,13 +493,13 @@ nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_
 	 *  we can safely just transfer each segment to its
 	 *  associated PRP entry.
 	 */
-	ASSERT(tr == NULL);
-	ASSERT(tr->qpair == NULL);
+	ASSERT(tr != NULL);
+	ASSERT(tr->qpair != NULL);
 
 	/* we do not use S/G, so only prp1 and prp2 needs to be set up */
 	if (dmac)
 	{
-		ASSERT(dmac_size > 2);
+		ASSERT(dmac_size <= 2);
 
 		tr->cmd.prp1 = dmac->dmac_laddress;
 		if (dmac_size > 1)
@@ -514,7 +520,7 @@ nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_
 				/* shall we be more delicate here ? */
 				panic("nvme_payload_map: cannot map DMA");
 		}
-		ASSERT(cookie_count > 2);
+		ASSERT(cookie_count <= 2);
 
 		tr->cmd.prp1 = cookie[0].dmac_laddress;
 

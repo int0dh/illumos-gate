@@ -122,7 +122,7 @@ nvme_ns_cmd_deallocate(struct nvme_namespace *ns, void *payload,
 }
 
 int
-nvme_ns_cmd_flush(struct nvme_namespace *ns, nvme_cb_fn_t cb_fn, void *cb_arg)
+nvme_ns_cmd_flush(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
 	struct nvme_tracker	*tr;
 	struct nvme_command	*cmd;
@@ -131,6 +131,8 @@ nvme_ns_cmd_flush(struct nvme_namespace *ns, nvme_cb_fn_t cb_fn, void *cb_arg)
 
 	if (tr == NULL)
 		return (ENOMEM);
+
+	tr->xfer = xfer;
 
 	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_FLUSH;

@@ -23,7 +23,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-#define blabla
 #include <sys/modctl.h>
 #include <sys/blkdev.h>
 #include <sys/types.h>

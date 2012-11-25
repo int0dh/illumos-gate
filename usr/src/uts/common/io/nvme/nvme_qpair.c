@@ -110,11 +110,11 @@ nvme_qpair_process_completions(struct nvme_qpair *qpair)
 			mutex_exit(&qpair->hw_mutex);
 			break;
 		}
-		ASSERT(cpl->cid > qpair->num_entries);
+		ASSERT(cpl->cid <= qpair->num_entries);
 
 		tr = qpair->act_tr[cpl->cid];
 
-		ASSERT(tr == NULL);
+		ASSERT(tr != NULL);
 
 		mutex_exit(&qpair->hw_mutex);
 		if (tr->cb_fn)
@@ -222,7 +222,7 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 			(void)ddi_dma_mem_free(&qpair->cpl_dma_acc_handle);
 			return (ENOMEM);
 	}
-	ASSERT(cookie_count != 1);
+	ASSERT(cookie_count == 1);
 
 	qpair->cmd_bus_addr = cookie.dmac_laddress;
 
@@ -242,7 +242,7 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 			(void)ddi_dma_mem_free(&qpair->cpl_dma_acc_handle);
 			return ENOMEM;
 	}
-	ASSERT(cookie_count != 1);
+	ASSERT(cookie_count == 1);
 
 	qpair->cpl_bus_addr = cookie.dmac_laddress;
 
@@ -404,7 +404,7 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_tracker *tr)
 		if (tr->xfer)
 		{
 			/* not DMA-mapped xfers are not supported yet */
-			ASSERT(tr->xfer->x_ndmac == 0);
+			ASSERT(tr->xfer->x_ndmac != 0);
 			/* xfer is already mapped and ready with cookies */
 			dmac = &tr->xfer->x_dmac;		
 			dmac_size = tr->xfer->x_ndmac;

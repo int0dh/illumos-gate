@@ -190,7 +190,6 @@ struct nvme_controller {
 	boolean_t		per_cpu_io_queues;
 
 	/* Fields for tracking progress during controller initialization. */
-//	struct intr_config_hook	config_hook;
 	uint32_t		ns_identified;
 	uint32_t		queues_created;
 
@@ -292,10 +291,7 @@ void	nvme_ctrlr_cmd_asynchronous_event_request(struct nvme_controller *ctrlr,
 						  void *cb_arg);
 
 void	nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_t *dmac,  int dmac_size, void *addr, size_t len);
-//void	nvme_payload_map_uio(void *arg, bus_dma_segment_t *seg, int nseg,
-//			     bus_size_t mapsize, int error);
 
-//int	nvme_ctrlr_construct(struct nvme_controller *ctrlr, device_t dev);
 int	nvme_ctrlr_reset(struct nvme_controller *ctrlr);
 /* ctrlr defined as void * to allow use with config_intrhook. */
 int	nvme_ctrlr_start(void *ctrlr_arg);
@@ -326,7 +322,7 @@ void	nvme_sysctl_initialize_ctrlr(struct nvme_controller *ctrlr);
 void	nvme_dump_command(struct nvme_command *cmd);
 void	nvme_dump_completion(struct nvme_completion *cpl);
 
-/*static*/__inline struct nvme_tracker*
+static __inline struct nvme_tracker*
 nvme_allocate_tracker(struct nvme_qpair *q, void *payload, uint32_t payload_size, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
 	struct nvme_tracker *tr;
@@ -355,7 +351,7 @@ nvme_allocate_tracker(struct nvme_qpair *q, void *payload, uint32_t payload_size
 	return tr;
 }
 
-/*static*/ __inline void
+static __inline void
 nvme_free_tracker(struct nvme_qpair *q, struct nvme_tracker *tr)
 {
 	if (tr->timeout != 0)
