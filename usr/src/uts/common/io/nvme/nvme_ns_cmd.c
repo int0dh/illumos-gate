@@ -51,8 +51,9 @@ nvme_ns_cmd_read(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn,
 
 	tr = nvme_allocate_tracker(&ns->ctrlr->ioq[0], xfer->x_kaddr, xfer->x_nblks*512, cb_fn, cb_arg);
 
+	/* no resources in the IO qpair */
 	if (tr == NULL)
-		return (ENOMEM);
+		return (EAGAIN);
 
 	tr->xfer = xfer;
 
@@ -64,9 +65,7 @@ nvme_ns_cmd_read(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn,
 	*(uint64_t *)&cmd->cdw10 = xfer->x_blkno;
 	cmd->cdw12 = xfer->x_nblks - 1;
 
-	nvme_ctrlr_submit_io_request(ns->ctrlr, tr);
-
-	return (0);
+	return nvme_ctrlr_submit_io_request(ns->ctrlr, tr);
 }
 
 int
@@ -78,7 +77,7 @@ nvme_ns_cmd_write(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn
 	tr = nvme_allocate_tracker(&ns->ctrlr->ioq[0], xfer->x_kaddr, xfer->x_nblks*512, cb_fn, cb_arg);
 
 	if (tr == NULL)
-		return (ENOMEM);
+		return (EAGAIN);
 
 	tr->xfer = xfer;
 	cmd = &tr->cmd;
@@ -90,9 +89,7 @@ nvme_ns_cmd_write(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn
 
 	cmd->cdw12 = xfer->x_nblks - 1;
 
-	nvme_ctrlr_submit_io_request(ns->ctrlr, tr);
-
-	return (0);
+	return nvme_ctrlr_submit_io_request(ns->ctrlr, tr);
 }
 
 int
@@ -106,7 +103,7 @@ nvme_ns_cmd_deallocate(struct nvme_namespace *ns, void *payload,
 	    num_ranges * sizeof(struct nvme_dsm_range), cb_fn, cb_arg);
 
 	if (tr == NULL)
-		return (ENOMEM);
+		return (EAGAIN);
 
 	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_DATASET_MANAGEMENT;
@@ -116,9 +113,7 @@ nvme_ns_cmd_deallocate(struct nvme_namespace *ns, void *payload,
 	cmd->cdw10 = num_ranges;
 	cmd->cdw11 = NVME_DSM_ATTR_DEALLOCATE;
 
-	nvme_ctrlr_submit_io_request(ns->ctrlr, tr);
-
-	return (0);
+	return nvme_ctrlr_submit_io_request(ns->ctrlr, tr);
 }
 
 int
@@ -130,7 +125,7 @@ nvme_ns_cmd_flush(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn
 	tr = nvme_allocate_tracker(&ns->ctrlr->ioq[0], NULL, 0, cb_fn, cb_arg);
 
 	if (tr == NULL)
-		return (ENOMEM);
+		return (EAGAIN);
 
 	tr->xfer = xfer;
 
@@ -138,7 +133,5 @@ nvme_ns_cmd_flush(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn
 	cmd->opc = NVME_OPC_FLUSH;
 	cmd->nsid = ns->id;
 
-	nvme_ctrlr_submit_io_request(ns->ctrlr, tr);
-
-	return (0);
+	return nvme_ctrlr_submit_io_request(ns->ctrlr, tr);
 }
