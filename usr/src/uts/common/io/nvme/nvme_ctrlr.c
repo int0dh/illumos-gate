@@ -39,6 +39,7 @@
 #include <sys/modctl.h>
 #include <sys/debug.h>
 #include <sys/pci.h>
+#include <sys/cpuvar.h>
 #include <sys/sysmacros.h>
 
 #include "nvme.h"
@@ -616,12 +617,12 @@ nvme_ctrlr_construct(struct nvme_controller *ctrlr)
 	return (0);
 }
 
-void
+int
 nvme_ctrlr_submit_admin_request(struct nvme_controller *ctrlr,
     struct nvme_tracker *tr)
 {
 	clock_t deadline;
-	int ret;
+	int ret = 0;
 
 	deadline = ddi_get_lbolt() + (clock_t )drv_usectohz(3 * 1000000);
 
@@ -632,18 +633,22 @@ nvme_ctrlr_submit_admin_request(struct nvme_controller *ctrlr,
 	mutex_exit(&tr->mutex);
 	if (ret < 0)
 	{
-		printf("no response from controller in 3 seconds!\n");
-		printf("TODO: %s: update me to return ETIMEDOUT\n", __func__);
+		dev_err(ctrlr->devinfo, CE_WARN, "no response from controller!");
+		ret = ETIMEDOUT;
 	}
 	nvme_free_tracker(&ctrlr->adminq, tr);
+	return ret;
 }
 
 /* TODO: update me to chose IO qpair */
-void
+int
 nvme_ctrlr_submit_io_request(struct nvme_controller *ctrlr,
     struct nvme_tracker *tr)
 {
 	struct nvme_qpair       *qpair = &ctrlr->ioq[0];
 
+	/* never can fail */
 	nvme_qpair_submit_request(qpair, tr);
+
+	return 0;
 }

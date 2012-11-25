@@ -241,52 +241,51 @@ struct nvme_controller {
 void    nvme_interrupt_enable(struct nvme_controller *nvme);
 void	nvme_interrupt_disable(struct nvme_controller *nvme);
 
-void	nvme_ns_test(struct nvme_namespace *ns, u_long cmd, caddr_t arg);
 
 int    nvme_ctrlr_construct(struct nvme_controller *ctrlr);
-void	nvme_ctrlr_cmd_set_feature(struct nvme_controller *ctrlr,
+int	nvme_ctrlr_cmd_set_feature(struct nvme_controller *ctrlr,
 				   uint8_t feature, uint32_t cdw11,
 				   void *payload, uint32_t payload_size,
 				   nvme_cb_fn_t cb_fn, void *cb_arg);
-void	nvme_ctrlr_cmd_get_feature(struct nvme_controller *ctrlr,
+int	nvme_ctrlr_cmd_get_feature(struct nvme_controller *ctrlr,
 				   uint8_t feature, uint32_t cdw11,
 				   void *payload, uint32_t payload_size,
 				   nvme_cb_fn_t cb_fn, void *cb_arg);
-void	nvme_ctrlr_cmd_identify_controller(struct nvme_controller *ctrlr,
+int	nvme_ctrlr_cmd_identify_controller(struct nvme_controller *ctrlr,
 					   void *payload,
 					   nvme_cb_fn_t cb_fn, void *cb_arg);
-void	nvme_ctrlr_cmd_identify_namespace(struct nvme_controller *ctrlr,
+int	nvme_ctrlr_cmd_identify_namespace(struct nvme_controller *ctrlr,
 					  uint16_t nsid, void *payload,
 					  nvme_cb_fn_t cb_fn, void *cb_arg);
-void	nvme_ctrlr_cmd_set_interrupt_coalescing(struct nvme_controller *ctrlr,
+int	nvme_ctrlr_cmd_set_interrupt_coalescing(struct nvme_controller *ctrlr,
 						uint32_t microseconds,
 						uint32_t threshold,
 						nvme_cb_fn_t cb_fn,
 						void *cb_arg);
-void	nvme_ctrlr_cmd_get_health_information_page(struct nvme_controller *ctrlr,
+int	nvme_ctrlr_cmd_get_health_information_page(struct nvme_controller *ctrlr,
 						   uint32_t nsid,
 						   struct nvme_health_information_page *payload,
 						   nvme_cb_fn_t cb_fn,
 						   void *cb_arg);
-void	nvme_ctrlr_cmd_create_io_cq(struct nvme_controller *ctrlr,
+int	nvme_ctrlr_cmd_create_io_cq(struct nvme_controller *ctrlr,
 				    struct nvme_qpair *io_que, uint16_t vector,
 				    nvme_cb_fn_t cb_fn, void *cb_arg);
-void	nvme_ctrlr_cmd_create_io_sq(struct nvme_controller *ctrlr,
+int	nvme_ctrlr_cmd_create_io_sq(struct nvme_controller *ctrlr,
 				    struct nvme_qpair *io_que,
 				    nvme_cb_fn_t cb_fn, void *cb_arg);
-void	nvme_ctrlr_cmd_delete_io_cq(struct nvme_controller *ctrlr,
+int	nvme_ctrlr_cmd_delete_io_cq(struct nvme_controller *ctrlr,
 				    struct nvme_qpair *io_que,
 				    nvme_cb_fn_t cb_fn, void *cb_arg);
-void	nvme_ctrlr_cmd_delete_io_sq(struct nvme_controller *ctrlr,
+int	nvme_ctrlr_cmd_delete_io_sq(struct nvme_controller *ctrlr,
 				    struct nvme_qpair *io_que,
 				    nvme_cb_fn_t cb_fn, void *cb_arg);
-void	nvme_ctrlr_cmd_set_num_queues(struct nvme_controller *ctrlr,
+int	nvme_ctrlr_cmd_set_num_queues(struct nvme_controller *ctrlr,
 				      uint32_t num_queues, nvme_cb_fn_t cb_fn,
 				      void *cb_arg);
-void	nvme_ctrlr_cmd_set_asynchronous_event_config(struct nvme_controller *ctrlr,
+int	nvme_ctrlr_cmd_set_asynchronous_event_config(struct nvme_controller *ctrlr,
 					   union nvme_critical_warning_state state,
 					   nvme_cb_fn_t cb_fn, void *cb_arg);
-void	nvme_ctrlr_cmd_asynchronous_event_request(struct nvme_controller *ctrlr,
+int	nvme_ctrlr_cmd_asynchronous_event_request(struct nvme_controller *ctrlr,
 						  nvme_cb_fn_t cb_fn,
 						  void *cb_arg);
 
@@ -295,9 +294,9 @@ void	nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_co
 int	nvme_ctrlr_reset(struct nvme_controller *ctrlr);
 /* ctrlr defined as void * to allow use with config_intrhook. */
 int	nvme_ctrlr_start(void *ctrlr_arg);
-void	nvme_ctrlr_submit_admin_request(struct nvme_controller *ctrlr,
+int	nvme_ctrlr_submit_admin_request(struct nvme_controller *ctrlr,
 					struct nvme_tracker *tr);
-void	nvme_ctrlr_submit_io_request(struct nvme_controller *ctrlr,
+int	nvme_ctrlr_submit_io_request(struct nvme_controller *ctrlr,
 				     struct nvme_tracker *tr);
 
 int	nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
