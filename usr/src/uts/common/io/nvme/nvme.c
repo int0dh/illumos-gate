@@ -41,6 +41,7 @@
 #include <sys/debug.h>
 #include <sys/pci.h>
 #include <sys/sysmacros.h>
+#include <sys/cpuvar.h>
 
 #include "nvme.h"
 #include "nvme_private.h"
@@ -179,7 +180,7 @@ nvme_io_completed(void *arg, const struct nvme_completion *status, struct nvme_t
 
 	/* release the tracker. If the operation completed with error,
 	*  complete blkdev request with EIO */
-	nvme_free_tracker(&ns->ctrlr->ioq[0], tr);
+	nvme_free_tracker(tr);
 
 	ASSERT(xfer != NULL);
 
@@ -258,6 +259,9 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	ddi_dma_handle_t dmah;
 
 	instance = ddi_get_instance(devinfo);
+
+	printf("CPU cpu is %d\n", CPU->cpu_id);
+	printf("total CPUs %d\n", ncpus);
 
 	switch (cmd)
 	{

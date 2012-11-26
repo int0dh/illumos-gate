@@ -94,27 +94,22 @@ struct nvme_tracker {
 	kmutex_t			mutex;
 	nvme_cb_fn_t			cb_fn;
 	void				*cb_arg;
-	/* TODO: rework me! */
 	bd_xfer_t			*xfer;
 	void				*payload;
 	size_t				payload_size;
-	/* end of rework me */
-//	struct callout			timer;
+
 	timeout_id_t			timeout;
 	uint16_t			cid;
-
-/* we do not use S/G in the commands, so below is not required for us */
-//	uint64_t			prp[NVME_MAX_PRP_LIST_ENTRIES];
-//	uint64_t			prp_bus_addr;
-//	bus_dmamap_t			prp_dma_map;
 };
 
 struct nvme_qpair {
 
 	struct nvme_controller	*ctrlr;
+
 	ddi_acc_handle_t	cmd_dma_acc_handle;
 	ddi_acc_handle_t	cpl_dma_acc_handle;
-	ddi_softint_handle_t  *soft_intr_handle;
+	ddi_softint_handle_t	*soft_intr_handle;
+	ddi_intr_handle_t	*hw_intr_handle;	
 
 	uint32_t		id;
 	uint32_t		phase;
@@ -153,6 +148,7 @@ struct nvme_qpair {
 	kmutex_t		hw_mutex;
 	unsigned int		soft_intr_pri;
 
+	
 } __aligned(CACHE_LINE_SIZE);
 
 struct nvme_namespace {
@@ -232,11 +228,6 @@ struct nvme_controller {
 		ddi_put32((sc)->nvme_regs_handle, (uint32_t *)((sc)->nvme_regs_base + nvme_mmio_offsetof(reg) + 4), ((val) & 0xFFFFFFFF00000000UL) >> 32); \
 	} while (0)
 
-
-#if __FreeBSD_version < 800054
-#define wmb()	__asm volatile("sfence" ::: "memory")
-#define mb()	__asm volatile("mfence" ::: "memory")
-#endif
 
 void    nvme_interrupt_enable(struct nvme_controller *nvme);
 void	nvme_interrupt_disable(struct nvme_controller *nvme);
@@ -351,8 +342,10 @@ nvme_allocate_tracker(struct nvme_qpair *q, void *payload, uint32_t payload_size
 }
 
 static __inline void
-nvme_free_tracker(struct nvme_qpair *q, struct nvme_tracker *tr)
+nvme_free_tracker(struct nvme_tracker *tr)
 {
+	struct nvme_qpair *q = tr->qpair;
+
 	if (tr->timeout != 0)
 		(void)untimeout(tr->timeout);
 

@@ -47,9 +47,6 @@
 
 extern void kmdb_enter();
 
-static int
-nvme_ctrlr_configure_intx(struct nvme_controller *nvme);
-
 static void
 nvme_ctrlr_cb(void *arg, const struct nvme_completion *status, struct nvme_tracker *tr)
 {
@@ -90,7 +87,7 @@ nvme_ctrlr_construct_io_qpairs(struct nvme_controller *ctrlr)
 {
 	struct nvme_qpair	*qpair;
 	union cap_lo_register	cap_lo;
-	int			i, num_entries, num_trackers;
+	int			i, ret, num_entries, num_trackers;
 
 	num_entries = NVME_IO_ENTRIES;
 
@@ -115,12 +112,6 @@ nvme_ctrlr_construct_io_qpairs(struct nvme_controller *ctrlr)
 
 	ctrlr->max_xfer_size = NVME_MAX_XFER_SIZE;
 
-	/* FIXME FIXME FIXME */
-	/* we have to be invoked with already initiazlied ctrl->num_io_queues,
-	* but we don`t. so initialize this to value more than maximal possible
-	* quick and very dirty */
-	ctrlr->num_io_queues = 8;
-
 	ctrlr->ioq = kmem_zalloc(ctrlr->num_io_queues * sizeof(struct nvme_qpair), KM_SLEEP);
 
 	for (i = 0; i < ctrlr->num_io_queues; i++)
@@ -134,14 +125,25 @@ nvme_ctrlr_construct_io_qpairs(struct nvme_controller *ctrlr)
 		 * For I/O queues, use the controller-wide max_xfer_size
 		 *  calculated in nvme_attach().
 		 */
-		/* TODO: do something when nvme_qpair_construct() fails */
-		nvme_qpair_construct(qpair,
+		if ((ret = nvme_qpair_construct(qpair,
 				     i+1, /* qpair ID */
 				     ctrlr->msix_enabled ? i+1 : 0, /* vector */
 				     num_entries,
 				     num_trackers,
 				     ctrlr->max_xfer_size,
-				     ctrlr);
+				     ctrlr)) != 0)
+		{
+			int j;
+			for (j = 0; j < i; j ++)
+			{
+				struct nvme_qpair *q = &ctrlr->ioq[i];
+				nvme_io_qpair_destroy(q);
+			}
+			(void)nvme_admin_qpair_destroy(&ctrlr->adminq);
+			kmem_free(ctrlr->ioq,
+				ctrlr->num_io_queues * sizeof(struct nvme_qpair));
+			return (ret);
+		}
 
 	}
 	return (0);
@@ -270,13 +272,16 @@ nvme_ctrlr_identify(struct nvme_controller *ctrlr)
 	struct nvme_completion	cpl;
 	int ret;
 
-	nvme_ctrlr_cmd_identify_controller(ctrlr, &ctrlr->cdata,
+	ret = nvme_ctrlr_cmd_identify_controller(ctrlr, &ctrlr->cdata,
 	    nvme_ctrlr_cb, &cpl);
+
+	if (ret)
+		return ret;
 
 	if (cpl.sf_sc || cpl.sf_sct) 
 		return (ENXIO);
 
-	return (DDI_SUCCESS);
+	return (0);
 }
 
 static int
@@ -284,9 +289,13 @@ nvme_ctrlr_set_num_qpairs(struct nvme_controller *ctrlr)
 {
 	struct nvme_completion	cpl;
 	int			cq_allocated, sq_allocated;
+	int ret;
 
-	nvme_ctrlr_cmd_set_num_queues(ctrlr, ctrlr->num_io_queues,
+	ret = nvme_ctrlr_cmd_set_num_queues(ctrlr, ctrlr->num_io_queues,
 	    nvme_ctrlr_cb, &cpl);
+
+	if (ret)
+		return ret;
 
 	if (cpl.sf_sc || cpl.sf_sct)
 		return (ENXIO);
@@ -311,7 +320,7 @@ nvme_ctrlr_set_num_qpairs(struct nvme_controller *ctrlr)
 		 *  previously but now found to be not needed.
 		 */
 	}
-	return 0;
+	return (0);
 }
 
 static int
@@ -319,7 +328,7 @@ nvme_ctrlr_create_qpairs(struct nvme_controller *ctrlr)
 {
 	struct nvme_qpair	*qpair;
 	struct nvme_completion	cpl;
-	int			i;
+	int i, ret;
 
 	printf("%s: %d IO queues specified!\n", __func__, ctrlr->num_io_queues);
 
@@ -327,14 +336,20 @@ nvme_ctrlr_create_qpairs(struct nvme_controller *ctrlr)
 	{
 		qpair = &ctrlr->ioq[i];
 
-		nvme_ctrlr_cmd_create_io_cq(ctrlr, qpair, qpair->vector,
+		ret = nvme_ctrlr_cmd_create_io_cq(ctrlr, qpair, qpair->vector,
 		    nvme_ctrlr_cb, &cpl);
+
+		if (ret)
+			return ret;
 
 		if (cpl.sf_sc || cpl.sf_sct)
 			return (ENXIO);
 
-		nvme_ctrlr_cmd_create_io_sq(qpair->ctrlr, qpair,
+		ret = nvme_ctrlr_cmd_create_io_sq(qpair->ctrlr, qpair,
 		    nvme_ctrlr_cb, &cpl);
+
+		if (ret)
+			return ret;
 
 		if (cpl.sf_sc || cpl.sf_sct)
 			return (ENXIO);
@@ -402,36 +417,39 @@ nvme_ctrlr_start(void *ctrlr_arg)
 	nvme_interrupt_enable(ctrlr);
 
 	if (nvme_ctrlr_identify(ctrlr) != 0)
+	{
+		nvme_interrupt_disable(ctrlr);
 		return (ENXIO);
-
+	}
 	if (nvme_ctrlr_set_num_qpairs(ctrlr) != 0)
+	{
+		nvme_interrupt_disable(ctrlr);
 		return (ENXIO);
-
-	printf("create qpairs..\n");
+	}
+	printf("create qpairs..\n");	
 	if (nvme_ctrlr_create_qpairs(ctrlr) != 0)
+	{
+		nvme_interrupt_disable(ctrlr);
 		return (ENXIO);
-
+	}
 	if (nvme_ctrlr_construct_namespaces(ctrlr) != 0)
+	{
+		nvme_interrupt_disable(ctrlr);
 		return (ENXIO);
-
+	}
 	nvme_ctrlr_configure_aer(ctrlr);
 	nvme_ctrlr_configure_int_coalescing(ctrlr);
-
-
 
 	ctrlr->is_started = B_TRUE;
 	return 0;
 }
 
-/* This code has to be reworked for MSI/MSI-X. In this case one handler */
-/* will process olny one qpair */
-static uint_t
+/* this softintr is used when obsolete INTx PCI interrupts are in use */
+uint_t
 nvme_ctrlr_softintr_handler(char *arg, char *unused)
 {
 	struct nvme_qpair *qpair = (struct nvme_qpair *)arg;
 	struct nvme_controller *nvme = qpair->ctrlr;
-// comment-out the code until MSI/MSI-X 
-//	nvme_qpair_process_completions(qpair);
 
 	nvme_qpair_process_completions(&nvme->adminq);
 
@@ -442,22 +460,29 @@ nvme_ctrlr_softintr_handler(char *arg, char *unused)
 	return DDI_INTR_CLAIMED;
 }
 
-uint_t 
-nvme_ctrlr_intx_handler(char *arg, char *unused)
+/* this softintr is for MSI/MSI-X case */
+uint_t
+nvme_ctrlr_softintr_msi_handler(char *arg, char *unused)
 {
 	struct nvme_qpair *qpair = (struct nvme_qpair *)arg;
 
-	nvme_mmio_write_4(qpair->ctrlr, intms, 0x1);
+	if (qpair->cpl)
+		nvme_qpair_process_completions(qpair);
+
+	nvme_mmio_write_4(qpair->ctrlr, intmc, 1 << qpair->id);
+	return DDI_INTR_CLAIMED;
+}
+
+uint_t 
+nvme_ctrlr_intr_handler(char *arg, char *unused)
+{
+	struct nvme_qpair *qpair = (struct nvme_qpair *)arg;
+
+	nvme_mmio_write_4(qpair->ctrlr, intms, 1 << qpair->id);
 
 	if (qpair->soft_intr_handle)
 		(void)ddi_intr_trigger_softint(*qpair->soft_intr_handle, NULL);
 
-//	kmdb_enter();
-
-	/* for some reason kernel invokes us again and again when we return */
-	/*  DDI_INTR_CLAIMED. Not sure if this not a bug in QEMU */
-	/* probably sharing PCI INTx interrupt gives such an effect */
-	/* so let`s return 0 here, just as a workaround */
 	return 0;
 }
 
@@ -473,147 +498,149 @@ nvme_interrupt_disable(struct nvme_controller *nvme)
 	ddi_intr_disable(nvme->intr_handle[0]);
 }
 
-static int 
-nvme_register_interrupts(struct nvme_controller *nvme, int intr_type)
-{
-	int count, actual;
-	int ret;
-	int avail;
-	int i;
-
-	ret = ddi_intr_get_nintrs(nvme->devinfo, intr_type, &count);
-	if (ret != DDI_SUCCESS)
-	{
-		printf("ddi_intr_get_nintrs failure. ret %d ._., count %d\n", ret, count);
-		return DDI_FAILURE;
-	}
-
-	ret = ddi_intr_get_navail(nvme->devinfo, intr_type, &avail);
-	if (ret != DDI_SUCCESS)
-	{
-		printf("ddi_intr_get_navail failure, ret %d\n", ret);
-		return DDI_FAILURE;
-	}	
-	/* allocate one interrupt per I/O qpair + one for admin qpair */
-	count = 1;
-	printf("updated count is %d\n", count);
-
-	nvme->intr_size = count * sizeof(ddi_intr_handle_t);
-	nvme->intr_handle = kmem_alloc(nvme->intr_size, KM_SLEEP);
-
-	nvme->soft_intr_handle = kmem_alloc(nvme->intr_size, KM_SLEEP);
-	
-	ret = ddi_intr_alloc(nvme->devinfo, nvme->intr_handle, intr_type, 0, count, &actual, DDI_INTR_ALLOC_NORMAL);
-
-	if (ret != DDI_SUCCESS)
-	{
-		printf("cannot allocate interrupt handle!\n");
-		kmem_free(nvme->intr_handle, nvme->intr_size);
-		kmem_free(nvme->soft_intr_handle, nvme->intr_size);
-		return ret;
-	}
-
-/* DISABLE THIS code for now, until we get MSI working */
-#if 0
-	for (i = 1; i < count; i ++)
-	{
-		
-		ret = ddi_intr_add_handler(nvme->intr_handle[i], nvme_ctrlr_intx_handler, (caddr_t)&nvme->ioq[i - 1], NULL);
-		if (ret != DDI_SUCCESS)
-		{
-			printf("cannot register interrupt handler!, ret %d\n", ret);
-			return DDI_FAILURE;
-		}
-		(void)ddi_intr_add_softint(nvme->devinfo, &nvme->soft_intr_handle[i], DDI_INTR_SOFTPRI_MAX, nvme_ctrlr_softintr_handler, (caddr_t)&nvme->ioq[i - 1]);
-
-		nvme->ioq[i - 1].soft_intr_handle = &nvme->soft_intr_handle[i];
-	}
-#endif
-	/* register handler for admin qpair */
-	ddi_intr_add_handler(nvme->intr_handle[0], nvme_ctrlr_intx_handler, (caddr_t)&nvme->adminq, NULL);
-	ddi_intr_add_softint(nvme->devinfo, &nvme->soft_intr_handle[0], DDI_INTR_SOFTPRI_MAX, nvme_ctrlr_softintr_handler, (caddr_t)&nvme->adminq);
-	nvme->adminq.soft_intr_handle = &nvme->soft_intr_handle[0];
-
-	ddi_intr_get_softint_pri(*nvme->adminq.soft_intr_handle, &nvme->adminq.soft_intr_pri);
-
-	printf("soft intr priority is %d\n", nvme->adminq.soft_intr_pri);
-	printf("%d interrupt handlers registered ok!\n", count); 
-	return DDI_SUCCESS;
-}
-/* it is not clear yet how to get CPU count, so let`s hardcode the value for now */
-#define CPU_COUNT 2
 /*FIXME: check status for each DDI function */
 int
 nvme_qpair_register_interrupt(struct nvme_qpair *q)
 {
 	int32_t intr_type;
 	struct nvme_controller *nvme = q->ctrlr;
+	uint_t (*softintr_handler)(char *, char *);
 
-	if (q != &nvme->adminq)
+	if (nvme->msix_enabled != B_TRUE)
 	{
+		softintr_handler = nvme_ctrlr_softintr_handler;
 		/* no MSI under QEMU :( */
-		printf("interrupt already registered!\n");
-		/* required for mutex initialization */
-		q->soft_intr_pri = nvme->adminq.soft_intr_pri;
-		return 0;
+		if (q != &nvme->adminq)
+		{
+			/* required for mutex initialization */
+			q->soft_intr_pri = nvme->adminq.soft_intr_pri;
+			return 0;
+		}
 	}
+	else
+		softintr_handler = nvme_ctrlr_softintr_msi_handler;
 
-#if 0
-	nvme->msix_enabled = 0;
-	nvme->rid = 0;
+	ddi_intr_add_handler(nvme->intr_handle[q->id], 
+				nvme_ctrlr_intr_handler, 
+				(caddr_t)q, NULL);
 
+	ddi_intr_add_softint(nvme->devinfo,
+			&nvme->soft_intr_handle[q->id],
+			DDI_INTR_SOFTPRI_MAX, 
+			softintr_handler, 
+			(caddr_t)q);
+
+	q->soft_intr_handle = &nvme->soft_intr_handle[q->id];
+	ddi_intr_get_softint_pri(*q->soft_intr_handle, &q->soft_intr_pri);
+
+	return (0);
+}
+
+static
+int nvme_allocate_interrupts(struct nvme_controller *nvme)
+{
+	
+	int count, actual;
+	int intr_type;
+
+	nvme->msix_enabled = B_FALSE;
+
+	/* fist of all, check if MSI/MSI-x is supported */
 	if (ddi_intr_get_supported_types(nvme->devinfo, &intr_type) != DDI_SUCCESS)
 	{
-		printf("cannot get supported interrupt type :(\n");
-		return -1;
+		printf("cannot get supported interrupt types\n");
+		return (EINVAL);
 	}
 
 	if (intr_type & (DDI_INTR_TYPE_MSI | DDI_INTR_TYPE_MSIX))
 	{
-		printf("MSI interrupts are supported!\n");
-		nvme->msix_enabled = 1;
+
+		printf("MSI interrupts are supported!!\n");
+
 		intr_type &= ~DDI_INTR_TYPE_FIXED;
+
+		if (ddi_intr_get_nintrs(nvme->devinfo,
+					intr_type, &count) != DDI_SUCCESS)
+			return (EINVAL);
+
+		nvme->msix_enabled = B_TRUE;
+
+		nvme->num_io_queues = min(ncpus, count);
+		dev_err(nvme->devinfo, CE_WARN, "%d IO queues to be allocated\n", count);
+
+		count = nvme->num_io_queues + 1;
+
+	} 
+	else
+	{
+		printf("MSI interrupts are not supported ._.\n");
+		nvme->num_io_queues = 1;
+		count = 1;
 	}
-#endif
-	nvme_register_interrupts(nvme, DDI_INTR_TYPE_FIXED);
-	
-	return (0);
+	nvme->intr_handle = kmem_zalloc(count * sizeof(ddi_intr_handle_t), KM_SLEEP);
+	nvme->soft_intr_handle = kmem_zalloc(count * sizeof(ddi_softint_handle_t), KM_SLEEP);
+
+	if (ddi_intr_alloc(nvme->devinfo, nvme->intr_handle,
+				 intr_type, 0, count, &actual,
+				 DDI_INTR_ALLOC_NORMAL) != DDI_SUCCESS)
+	{
+		kmem_free(nvme->intr_handle, count * sizeof(ddi_intr_handle_t));
+		kmem_free(nvme->soft_intr_handle, count * sizeof(ddi_softint_handle_t));
+		return (ENOMEM);
+	}
+	printf("actual interrupts %d\n", actual);
+
+	nvme->intr_size = actual;
+	return 0;
+}
+
+int nvme_release_interrupts(struct nvme_controller *nvme)
+{
+	int i;
+
+	for (i = 0; i < nvme->intr_size; i ++)
+		(void)ddi_intr_free(nvme->intr_handle[i]);
+
+	kmem_free(nvme->intr_handle, nvme->intr_size * sizeof(ddi_intr_handle_t));
+	kmem_free(nvme->soft_intr_handle, nvme->intr_size * sizeof(ddi_softint_handle_t));
+	return 0;
 }
 
 int
-nvme_ctrlr_construct(struct nvme_controller *ctrlr)
+nvme_ctrlr_construct(struct nvme_controller *nvme)
 {
 	union cap_lo_register	cap_lo;
 	union cap_hi_register	cap_hi;
-	int status = 0;
-//	int			num_vectors, per_cpu_io_queues, status = 0;
+	int status = 0, count;
 
-	ctrlr->is_started = B_FALSE;
-
+	
+	(void)nvme_allocate_interrupts(nvme);
 
 	/*
 	 * Software emulators may set the doorbell stride to something
 	 *  other than zero, but this driver is not set up to handle that.
 	 */
-	cap_hi.raw = nvme_mmio_read_4(ctrlr, cap_hi);
+	cap_hi.raw = nvme_mmio_read_4(nvme, cap_hi);
+	/* disable this check for NVME QEMU */
+	/* may be it would be better to fix qemu instead */
 # if 0
 	if (cap_hi.bits.dstrd != 0)
 	{
-		printf("cannot read"); 
 		return (ENXIO);
 #endif
 	/* Get ready timeout value from controller, in units of 500ms. */
-	cap_lo.raw = nvme_mmio_read_4(ctrlr, cap_lo);
-	ctrlr->ready_timeout_in_ms = cap_lo.bits.to * 500;
+	cap_lo.raw = nvme_mmio_read_4(nvme, cap_lo);
+	nvme->ready_timeout_in_ms = cap_lo.bits.to * 500;
 
-	nvme_ctrlr_construct_admin_qpair(ctrlr);
+	nvme_ctrlr_construct_admin_qpair(nvme);
 
-	status = nvme_ctrlr_construct_io_qpairs(ctrlr);
+	status = nvme_ctrlr_construct_io_qpairs(nvme);
 
-#if 0
 	if (status != 0)
+	{
+		nvme_release_interrupts(nvme);
 		return (status);
-#endif
+	}
 	return (0);
 }
 
@@ -622,7 +649,7 @@ nvme_ctrlr_submit_admin_request(struct nvme_controller *ctrlr,
     struct nvme_tracker *tr)
 {
 	clock_t deadline;
-	int ret = 0;
+	int ret;
 
 	deadline = ddi_get_lbolt() + (clock_t )drv_usectohz(3 * 1000000);
 
@@ -636,17 +663,24 @@ nvme_ctrlr_submit_admin_request(struct nvme_controller *ctrlr,
 		dev_err(ctrlr->devinfo, CE_WARN, "no response from controller!");
 		ret = ETIMEDOUT;
 	}
-	nvme_free_tracker(&ctrlr->adminq, tr);
+	else
+		ret = 0;
+
+	nvme_free_tracker(tr);
 	return ret;
 }
 
-/* TODO: update me to chose IO qpair */
 int
 nvme_ctrlr_submit_io_request(struct nvme_controller *ctrlr,
     struct nvme_tracker *tr)
 {
 	struct nvme_qpair       *qpair = &ctrlr->ioq[0];
 
+	if (ctrlr->msix_enabled == B_TRUE)
+		qpair = &ctrlr->ioq[CPU->cpu_id];
+	else
+		qpair = &ctrlr->ioq[0];
+ 
 	/* never can fail */
 	nvme_qpair_submit_request(qpair, tr);
 

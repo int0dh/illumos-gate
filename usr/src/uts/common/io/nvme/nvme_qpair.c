@@ -266,6 +266,7 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 				DDI_INTR_PRI(qpair->soft_intr_pri));
 	mutex_init(&qpair->free_trackers_mutex, NULL, MUTEX_DRIVER, 
 				DDI_INTR_PRI(qpair->soft_intr_pri));
+	printf("soft priority %d\n", qpair->soft_intr_pri);
 	return 0;
 }
 
@@ -295,6 +296,9 @@ nvme_qpair_destroy(struct nvme_qpair *qpair)
 	qpair->trackers = NULL;
 	mutex_destroy(&qpair->hw_mutex);
 	mutex_destroy(&qpair->free_trackers_mutex);
+
+	(void)ddi_dma_mem_free(&qpair->cmd_dma_acc_handle);
+	(void)ddi_dma_mem_free(&qpair->cpl_dma_acc_handle);
 }
 
 void
@@ -382,11 +386,11 @@ nvme_qpair_submit_cmd(struct nvme_qpair *qpair, struct nvme_tracker *tr)
 	if (++qpair->sq_tail == qpair->num_entries)
 		qpair->sq_tail = 0;
 
-	wmb();
+	membar_enter();
 	nvme_mmio_write_4(qpair->ctrlr, doorbell[qpair->id].sq_tdbl,
 	    qpair->sq_tail);
 
-	qpair->num_cmds++;
+	qpair->num_cmds ++;
 
 	mutex_exit(&qpair->hw_mutex);
 }

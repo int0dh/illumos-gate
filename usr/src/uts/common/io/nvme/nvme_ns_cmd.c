@@ -40,6 +40,7 @@
 #include <sys/debug.h>
 #include <sys/pci.h>
 #include <sys/sysmacros.h>
+#include <sys/cpuvar.h>
 
 #include "nvme_private.h"
 
@@ -48,8 +49,18 @@ nvme_ns_cmd_read(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn,
 {
 	struct nvme_tracker *tr;
 	struct nvme_command *cmd;
+	struct nvme_qpair *q;
 
-	tr = nvme_allocate_tracker(&ns->ctrlr->ioq[0], xfer->x_kaddr, xfer->x_nblks*512, cb_fn, cb_arg);
+	/* when MSI/MSI-X is enabled, we use one IO qpair per CPU */
+	if (ns->ctrlr->msix_enabled == B_TRUE)
+	{
+		ASSERT(ns->ctrlr->num_io_queues > CPU->cpu_id);
+		q = &ns->ctrlr->ioq[CPU->cpu_id];
+	}
+	else
+		q = &ns->ctrlr->ioq[0];
+
+	tr = nvme_allocate_tracker(q, xfer->x_kaddr, xfer->x_nblks << 9 , cb_fn, cb_arg);
 
 	/* no resources in the IO qpair */
 	if (tr == NULL)
@@ -73,8 +84,17 @@ nvme_ns_cmd_write(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn
 {
 	struct nvme_tracker 	*tr;
 	struct nvme_command	*cmd;
+	struct nvme_qpair	*q;
 
-	tr = nvme_allocate_tracker(&ns->ctrlr->ioq[0], xfer->x_kaddr, xfer->x_nblks*512, cb_fn, cb_arg);
+	if (ns->ctrlr->msix_enabled == B_TRUE)
+	{
+		ASSERT(ns->ctrlr->num_io_queues > CPU->cpu_id);
+		q = &ns->ctrlr->ioq[CPU->cpu_id];
+	}
+	else
+		q = &ns->ctrlr->ioq[0];
+
+	tr = nvme_allocate_tracker(q, xfer->x_kaddr, xfer->x_nblks << 9, cb_fn, cb_arg);
 
 	if (tr == NULL)
 		return (EAGAIN);
@@ -98,9 +118,18 @@ nvme_ns_cmd_deallocate(struct nvme_namespace *ns, void *payload,
 {
 	struct nvme_tracker	*tr;
 	struct nvme_command	*cmd;
+	struct nvme_qpair	*q;
 
-	tr = nvme_allocate_tracker(&ns->ctrlr->ioq[0], payload,
-	    num_ranges * sizeof(struct nvme_dsm_range), cb_fn, cb_arg);
+	if (ns->ctrlr->msix_enabled == B_TRUE)
+	{
+		ASSERT(ns->ctrlr->num_io_queues > CPU->cpu_id);
+		q = &ns->ctrlr->ioq[CPU->cpu_id];
+	}
+	else
+		q = &ns->ctrlr->ioq[0];
+
+	tr = nvme_allocate_tracker(q, payload, num_ranges * 
+				sizeof(struct nvme_dsm_range), cb_fn, cb_arg);
 
 	if (tr == NULL)
 		return (EAGAIN);
@@ -121,8 +150,17 @@ nvme_ns_cmd_flush(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn
 {
 	struct nvme_tracker	*tr;
 	struct nvme_command	*cmd;
+	struct nvme_qpair	*q;
 
-	tr = nvme_allocate_tracker(&ns->ctrlr->ioq[0], NULL, 0, cb_fn, cb_arg);
+	if (ns->ctrlr->msix_enabled == B_TRUE)
+	{
+		ASSERT(ns->ctrlr->num_io_queues > CPU->cpu_id);
+		q = &ns->ctrlr->ioq[CPU->cpu_id];
+	}
+	else
+		q = &ns->ctrlr->ioq[0];
+
+	tr = nvme_allocate_tracker(q, NULL, 0, cb_fn, cb_arg);
 
 	if (tr == NULL)
 		return (EAGAIN);
