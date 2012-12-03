@@ -87,7 +87,7 @@
 struct nvme_tracker {
 
 	TAILQ_ENTRY(nvme_tracker)	next;
-//	struct nvme_request		*req;
+	int				ndmac_completed;
 	struct nvme_command		cmd;
 	struct nvme_qpair		*qpair;
 	kcondvar_t			cv;
@@ -280,7 +280,10 @@ int	nvme_ctrlr_cmd_asynchronous_event_request(struct nvme_controller *ctrlr,
 						  nvme_cb_fn_t cb_fn,
 						  void *cb_arg);
 
-void	nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_t *dmac,  int dmac_size, void *addr, size_t len);
+void	nvme_admin_cb(void *arg, const struct nvme_completion *status,
+		struct nvme_tracker *tr);
+
+void	nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_t *dmac, void *addr, size_t len);
 
 int	nvme_ctrlr_reset(struct nvme_controller *ctrlr);
 /* ctrlr defined as void * to allow use with config_intrhook. */
@@ -297,6 +300,7 @@ int	nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 void	nvme_qpair_submit_cmd(struct nvme_qpair *qpair,
 			      struct nvme_tracker *tr);
 void	nvme_qpair_process_completions(struct nvme_qpair *qpair);
+int	nvme_wait_for_completion(struct nvme_qpair *qpair, struct nvme_tracker *tr);
 void	nvme_qpair_submit_request(struct nvme_qpair *qpair,
 				  struct nvme_tracker *tr);
 
@@ -334,6 +338,8 @@ nvme_allocate_tracker(struct nvme_qpair *q, void *payload, uint32_t payload_size
 	tr->cb_fn = cb_fn;
 	tr->cb_arg = cb_arg;
 	tr->xfer = NULL;
+	tr->ndmac_completed = 0;
+
 	tr->timeout = 0;
 	mutex_init(&tr->mutex, NULL, MUTEX_DRIVER, DDI_INTR_PRI(q->soft_intr_pri));
 	cv_init(&tr->cv, NULL, CV_DRIVER, NULL);
@@ -349,10 +355,9 @@ nvme_free_tracker(struct nvme_tracker *tr)
 	if (tr->timeout != 0)
 		(void)untimeout(tr->timeout);
 
-	q->act_tr[tr->cid] = NULL;
-
 	mutex_destroy(&tr->mutex);
 	cv_destroy(&tr->cv);
+
 	mutex_enter(&q->free_trackers_mutex);
 	TAILQ_INSERT_HEAD(&q->free_trackers, tr, next);
 	mutex_exit(&q->free_trackers_mutex);

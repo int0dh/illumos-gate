@@ -47,8 +47,8 @@
 
 extern void kmdb_enter();
 
-static void
-nvme_ctrlr_cb(void *arg, const struct nvme_completion *status, struct nvme_tracker *tr)
+void
+nvme_admin_cb(void *arg, const struct nvme_completion *status, struct nvme_tracker *tr)
 {
 	struct nvme_completion	*cpl = arg;
 
@@ -65,7 +65,7 @@ nvme_ctrlr_cb(void *arg, const struct nvme_completion *status, struct nvme_track
 	mutex_exit(&tr->mutex);
 }
 
-static int 
+/*static*/ int 
 nvme_ctrlr_construct_admin_qpair(struct nvme_controller *ctrlr)
 {
 	struct nvme_qpair	*qpair = &ctrlr->adminq;
@@ -82,7 +82,7 @@ nvme_ctrlr_construct_admin_qpair(struct nvme_controller *ctrlr)
 			     ctrlr);
 }
 
-static int
+/*static*/ int
 nvme_ctrlr_construct_io_qpairs(struct nvme_controller *ctrlr)
 {
 	struct nvme_qpair	*qpair;
@@ -149,7 +149,7 @@ nvme_ctrlr_construct_io_qpairs(struct nvme_controller *ctrlr)
 	return (0);
 }
 
-static int
+/*static*/ int
 nvme_ctrlr_wait_for_ready(struct nvme_controller *ctrlr)
 {
 	int ms_waited;
@@ -174,7 +174,7 @@ nvme_ctrlr_wait_for_ready(struct nvme_controller *ctrlr)
 	return (0);
 }
 
-static void
+/*static*/ void
 nvme_ctrlr_disable(struct nvme_controller *ctrlr)
 {
 	union cc_register cc;
@@ -191,7 +191,7 @@ nvme_ctrlr_disable(struct nvme_controller *ctrlr)
 	DELAY(5000);
 }
 
-static int
+/*static*/ int
 nvme_ctrlr_enable(struct nvme_controller *ctrlr)
 {
 	union cc_register	cc;
@@ -266,14 +266,14 @@ nvme_async_event_cb(void *arg, const struct nvme_completion *status)
 }
 #endif
 
-static int
+/*static*/ int
 nvme_ctrlr_identify(struct nvme_controller *ctrlr)
 {
 	struct nvme_completion	cpl;
 	int ret;
 
 	ret = nvme_ctrlr_cmd_identify_controller(ctrlr, &ctrlr->cdata,
-	    nvme_ctrlr_cb, &cpl);
+	    nvme_admin_cb, &cpl);
 
 	if (ret)
 		return ret;
@@ -284,7 +284,7 @@ nvme_ctrlr_identify(struct nvme_controller *ctrlr)
 	return (0);
 }
 
-static int
+/*static*/ int
 nvme_ctrlr_set_num_qpairs(struct nvme_controller *ctrlr)
 {
 	struct nvme_completion	cpl;
@@ -292,7 +292,7 @@ nvme_ctrlr_set_num_qpairs(struct nvme_controller *ctrlr)
 	int ret;
 
 	ret = nvme_ctrlr_cmd_set_num_queues(ctrlr, ctrlr->num_io_queues,
-	    nvme_ctrlr_cb, &cpl);
+	    nvme_admin_cb, &cpl);
 
 	if (ret)
 		return ret;
@@ -323,7 +323,7 @@ nvme_ctrlr_set_num_qpairs(struct nvme_controller *ctrlr)
 	return (0);
 }
 
-static int
+/*static*/ int
 nvme_ctrlr_create_qpairs(struct nvme_controller *ctrlr)
 {
 	struct nvme_qpair	*qpair;
@@ -337,7 +337,7 @@ nvme_ctrlr_create_qpairs(struct nvme_controller *ctrlr)
 		qpair = &ctrlr->ioq[i];
 
 		ret = nvme_ctrlr_cmd_create_io_cq(ctrlr, qpair, qpair->vector,
-		    nvme_ctrlr_cb, &cpl);
+		    nvme_admin_cb, &cpl);
 
 		if (ret)
 			return ret;
@@ -346,7 +346,7 @@ nvme_ctrlr_create_qpairs(struct nvme_controller *ctrlr)
 			return (ENXIO);
 
 		ret = nvme_ctrlr_cmd_create_io_sq(qpair->ctrlr, qpair,
-		    nvme_ctrlr_cb, &cpl);
+		    nvme_admin_cb, &cpl);
 
 		if (ret)
 			return ret;
@@ -357,7 +357,7 @@ nvme_ctrlr_create_qpairs(struct nvme_controller *ctrlr)
 	return 0;
 }
 
-static int
+/*static*/ int
 nvme_ctrlr_construct_namespaces(struct nvme_controller *ctrlr)
 {
 	struct nvme_namespace	*ns;
@@ -374,7 +374,7 @@ nvme_ctrlr_construct_namespaces(struct nvme_controller *ctrlr)
 	return 0;
 }
 
-static void
+/*static*/ void
 nvme_ctrlr_configure_aer(struct nvme_controller *ctrlr)
 {
 	union nvme_critical_warning_state	state;
@@ -401,7 +401,7 @@ nvme_ctrlr_configure_aer(struct nvme_controller *ctrlr)
 #endif
 }
 
-static void
+/*static*/ void
 nvme_ctrlr_configure_int_coalescing(struct nvme_controller *ctrlr)
 {
 
@@ -483,21 +483,39 @@ nvme_ctrlr_intr_handler(char *arg, char *unused)
 	if (qpair->soft_intr_handle)
 		(void)ddi_intr_trigger_softint(*qpair->soft_intr_handle, NULL);
 
-	return 0;
+	return DDI_INTR_CLAIMED;
 }
 
 void
 nvme_interrupt_enable(struct nvme_controller *nvme)
 {
-	ddi_intr_enable(nvme->intr_handle[0]);
+	if (nvme->intr_handle)
+		ddi_intr_enable(nvme->intr_handle[0]);
+	else
+		printf("INTR HANDLE IS NOT ALLOCATED\n");
 }
 
 void
 nvme_interrupt_disable(struct nvme_controller *nvme)
 {
-	ddi_intr_disable(nvme->intr_handle[0]);
+	if (nvme->intr_handle)
+		ddi_intr_disable(nvme->intr_handle[0]);
+	else
+		printf("INTR HANDLE IS NOT ALLOCATED\n");
 }
 
+int
+nvme_qpair_unregister_interrupt(struct nvme_qpair *q)
+{
+	if (q->soft_intr_handle)
+		ddi_intr_remove_softint(*q->soft_intr_handle);
+
+	if (q->hw_intr_handle)
+		ddi_intr_remove_handler(*q->hw_intr_handle);
+
+	return 0;
+}
+	
 /*FIXME: check status for each DDI function */
 int
 nvme_qpair_register_interrupt(struct nvme_qpair *q)
@@ -505,6 +523,7 @@ nvme_qpair_register_interrupt(struct nvme_qpair *q)
 	int32_t intr_type;
 	struct nvme_controller *nvme = q->ctrlr;
 	uint_t (*softintr_handler)(char *, char *);
+	u_int prio;
 
 	if (nvme->msix_enabled != B_TRUE)
 	{
@@ -520,10 +539,6 @@ nvme_qpair_register_interrupt(struct nvme_qpair *q)
 	else
 		softintr_handler = nvme_ctrlr_softintr_msi_handler;
 
-	ddi_intr_add_handler(nvme->intr_handle[q->id], 
-				nvme_ctrlr_intr_handler, 
-				(caddr_t)q, NULL);
-
 	ddi_intr_add_softint(nvme->devinfo,
 			&nvme->soft_intr_handle[q->id],
 			DDI_INTR_SOFTPRI_MAX, 
@@ -531,12 +546,21 @@ nvme_qpair_register_interrupt(struct nvme_qpair *q)
 			(caddr_t)q);
 
 	q->soft_intr_handle = &nvme->soft_intr_handle[q->id];
+	q->hw_intr_handle = &nvme->intr_handle[q->id];
 	ddi_intr_get_softint_pri(*q->soft_intr_handle, &q->soft_intr_pri);
+
+	ddi_intr_get_pri(nvme->intr_handle[0], &prio);
+	ddi_intr_set_pri(nvme->intr_handle[0], prio);
+	printf("HW IRQ prio %d\n", prio);
+
+	ddi_intr_add_handler(nvme->intr_handle[q->id], 
+				nvme_ctrlr_intr_handler, 
+				(caddr_t)q, NULL);
 
 	return (0);
 }
 
-static
+/*static*/
 int nvme_allocate_interrupts(struct nvme_controller *nvme)
 {
 	
@@ -568,6 +592,7 @@ int nvme_allocate_interrupts(struct nvme_controller *nvme)
 		nvme->num_io_queues = min(ncpus, count);
 		dev_err(nvme->devinfo, CE_WARN, "%d IO queues to be allocated\n", count);
 
+		/* + one ADMIN queue */
 		count = nvme->num_io_queues + 1;
 
 	} 

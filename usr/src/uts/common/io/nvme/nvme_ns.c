@@ -44,17 +44,6 @@
 
 #include "nvme_private.h"
 
-static void
-nvme_ns_cb(void *arg, const struct nvme_completion *status, struct nvme_tracker *tr)
-{
-	mutex_enter(&tr->mutex);
-
-	memcpy(arg, status, sizeof(* status));
-	cv_broadcast(&tr->cv);
-
-	mutex_exit(&tr->mutex);
-}
-
 uint32_t
 nvme_ns_get_max_io_xfer_size(struct nvme_namespace *ns)
 {
@@ -108,7 +97,7 @@ nvme_ns_construct(struct nvme_namespace *ns, uint16_t id,
 	ns->id = id;
 
 	nvme_ctrlr_cmd_identify_namespace(ctrlr, id, &ns->data,
-		    nvme_ns_cb, &cpl);
+		    nvme_admin_cb, &cpl);
 
 	if (cpl.sf_sc || cpl.sf_sct)
 	{

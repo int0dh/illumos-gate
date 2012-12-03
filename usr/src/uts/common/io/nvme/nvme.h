@@ -697,26 +697,19 @@ struct nvme_tracker;
 
 typedef void (*nvme_cb_fn_t)(void *, const struct nvme_completion *, struct nvme_tracker *tr);
 
-typedef void (*nvme_consumer_cb_fn_t)(void *, struct nvme_namespace *);
-
 enum nvme_namespace_flags {
 	NVME_NS_DEALLOCATE_SUPPORTED	= 0x1,
 	NVME_NS_FLUSH_SUPPORTED		= 0x2,
 };
 
 /* NVM I/O functions */
-int	nvme_ns_cmd_write(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn, void *cb_arg);
-int	nvme_ns_cmd_read(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn, void *cb_arg);
+int	nvme_ns_start_io(struct nvme_namespace *ns, bd_xfer_t *xfer,
+			nvme_cb_fn_t cb_fn, void *cb_arg,
+			enum nvme_nvm_opcode cmd_code);
+
 int	nvme_ns_cmd_deallocate(struct nvme_namespace *ns, void *payload,
 			       uint8_t num_ranges, nvme_cb_fn_t cb_fn,
 			       void *cb_arg);
-int	nvme_ns_cmd_flush(struct nvme_namespace *ns, bd_xfer_t *xfer, nvme_cb_fn_t cb_fn,
-			  void *cb_arg);
-
-/* Registration functions */
-struct nvme_consumer *	nvme_register_consumer(nvme_consumer_cb_fn_t cb_fn,
-					       void *cb_arg);
-void		nvme_unregister_consumer(struct nvme_consumer *consumer);
 
 /* Namespace helper functions */
 uint32_t	nvme_ns_get_max_io_xfer_size(struct nvme_namespace *ns);

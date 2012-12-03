@@ -2870,6 +2870,8 @@ alloc(int size, int mode)
 	    (char *)&acg);
 	if (acg.cg_magic != CG_MAGIC) {
 		(void) fprintf(stderr, gettext("cg 0: bad magic number\n"));
+		(void) fprintf(stderr, "0x%08x instead of 0x%08x\n",
+			acg.cg_magic, CG_MAGIC);
 		lockexit(32);
 	}
 	if (acg.cg_cs.cs_nbfree == 0) {

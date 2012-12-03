@@ -45,47 +45,13 @@
 #include "nvme_private.h"
 
 extern int nvme_qpair_register_interrupt(struct nvme_qpair *q);
+extern int nvme_qpair_unregister_interrupt(struct nvme_qpair *q);
 
-static boolean_t
-nvme_completion_check_retry(const struct nvme_completion *cpl)
+int
+nvme_wait_for_completion(struct nvme_qpair *qpair, struct nvme_tracker *tr)
 {
-	/*
-	 * TODO: spec is not clear how commands that are aborted due
-	 *  to TLER will be marked.  So for now, it seems
-	 *  NAMESPACE_NOT_READY is the only case where we should
-	 *  look at the DNR bit.
-	 */
-	switch (cpl->sf_sct) {
-	case NVME_SCT_GENERIC:
-		switch (cpl->sf_sc) {
-		case NVME_SC_NAMESPACE_NOT_READY:
-			if (cpl->sf_dnr)
-				return (0);
-			else
-				return (1);
-		case NVME_SC_INVALID_OPCODE:
-		case NVME_SC_INVALID_FIELD:
-		case NVME_SC_COMMAND_ID_CONFLICT:
-		case NVME_SC_DATA_TRANSFER_ERROR:
-		case NVME_SC_ABORTED_POWER_LOSS:
-		case NVME_SC_INTERNAL_DEVICE_ERROR:
-		case NVME_SC_ABORTED_BY_REQUEST:
-		case NVME_SC_ABORTED_SQ_DELETION:
-		case NVME_SC_ABORTED_FAILED_FUSED:
-		case NVME_SC_ABORTED_MISSING_FUSED:
-		case NVME_SC_INVALID_NAMESPACE_OR_FORMAT:
-		case NVME_SC_COMMAND_SEQUENCE_ERROR:
-		case NVME_SC_LBA_OUT_OF_RANGE:
-		case NVME_SC_CAPACITY_EXCEEDED:
-		default:
-			return (0);
-		}
-	case NVME_SCT_COMMAND_SPECIFIC:
-	case NVME_SCT_MEDIA_ERROR:
-	case NVME_SCT_VENDOR_SPECIFIC:
-	default:
-		return (0);
-	}
+	/* IMPLEMENT ME! */
+	return ETIMEDOUT;
 }
 
 void
@@ -93,45 +59,54 @@ nvme_qpair_process_completions(struct nvme_qpair *qpair)
 {
 	struct nvme_tracker	*tr;
 	struct nvme_completion	*cpl;
-	boolean_t		retry, error;
-	int i;
 
 	qpair->num_intr_handler_calls ++;
 
+	/* we work with the completion queue, no mutexes required */
+	/* because there is only one code flow per CQ */
 	for (;;)
 	{
 
-		mutex_enter(&qpair->hw_mutex);
+		off_t offset;  
 
 		cpl = &qpair->cpl[qpair->cq_head];
 
+		offset = (off_t)cpl - (off_t)qpair->cmd;
+		(void) ddi_dma_sync(qpair->ctrlr->dma_handle, offset,
+			sizeof(struct nvme_completion), DDI_DMA_SYNC_FORKERNEL); 
 		if (cpl->p != qpair->phase)
 		{
-			mutex_exit(&qpair->hw_mutex);
 			break;
 		}
 		ASSERT(cpl->cid <= qpair->num_entries);
 
-		tr = qpair->act_tr[cpl->cid];
-
-		ASSERT(tr != NULL);
-
-		mutex_exit(&qpair->hw_mutex);
-		if (tr->cb_fn)
-			tr->cb_fn(tr->cb_arg, cpl, tr);
 		mutex_enter(&qpair->hw_mutex);
 
+		tr = qpair->act_tr[cpl->cid];
+		qpair->act_tr[cpl->cid] = NULL;
 		qpair->sq_head = cpl->sqhd;
 
-		if (++ qpair->cq_head == qpair->num_entries)
+		mutex_exit(&qpair->hw_mutex);
+
+		ASSERT(tr != NULL);
+		if (tr == NULL)
+		{
+			printf("tracker == NULL!!\n");
+			kmdb_enter();
+		}
+
+		if (tr->cb_fn)
+			tr->cb_fn(tr->cb_arg, cpl, tr);
+
+		qpair->cq_head ++;
+
+		if (qpair->cq_head == qpair->num_entries)
 		{
 			qpair->cq_head = 0;
 			qpair->phase = !qpair->phase;
 		}
 		nvme_mmio_write_4(qpair->ctrlr, doorbell[qpair->id].cq_hdbl,
 		    qpair->cq_head);
-
-		mutex_exit(&qpair->hw_mutex);
 	}
 }
 
@@ -266,7 +241,11 @@ nvme_qpair_construct(struct nvme_qpair *qpair, uint32_t id,
 				DDI_INTR_PRI(qpair->soft_intr_pri));
 	mutex_init(&qpair->free_trackers_mutex, NULL, MUTEX_DRIVER, 
 				DDI_INTR_PRI(qpair->soft_intr_pri));
-	printf("soft priority %d\n", qpair->soft_intr_pri);
+#if 0
+	/* to make sure that HW heads and tails are zero when we start */
+	nvme_mmio_write_4(qpair->ctrlr, doorbell[qpair->id].cq_hdbl, 0);
+	nvme_mmio_write_4(qpair->ctrlr, doorbell[qpair->id].sq_tdbl, 0);
+#endif
 	return 0;
 }
 
@@ -275,6 +254,8 @@ nvme_qpair_destroy(struct nvme_qpair *qpair)
 {
 	struct nvme_tracker *tr;
 
+
+	nvme_qpair_unregister_interrupt(qpair);
 
 	if (qpair->act_tr)
 	{
@@ -359,36 +340,34 @@ nvme_io_qpair_destroy(struct nvme_qpair *qpair)
 	}
 }
 
-static void
-nvme_timeout(void *arg)
-{
-	/*
-	 * TODO: Add explicit abort operation here, once nvme(4) supports
-	 *  abort commands.
-	 */
-}
-
 void
 nvme_qpair_submit_cmd(struct nvme_qpair *qpair, struct nvme_tracker *tr)
 {
 
+	off_t offset;
+	struct nvme_command *cmd;
+
 	mutex_enter(&qpair->hw_mutex);
 
 	qpair->act_tr[tr->cid] = tr;
-
 	tr->cmd.cid = tr->cid;
-//	printf("%s: cmd.cid is %d\n", __func__, tr->cid);
-//	callout_reset(&tr->timer, NVME_TIMEOUT_IN_SEC * hz, nvme_timeout, tr);
+
+	cmd = &qpair->cmd[qpair->sq_tail];
 
 	/* Copy the command from the tracker to the submission queue. */
-	memcpy(&qpair->cmd[qpair->sq_tail], &tr->cmd, sizeof(tr->cmd));
+	memcpy(cmd, &tr->cmd, sizeof(tr->cmd));
+
+	offset = (off_t)cmd - (off_t)qpair->cmd;
+	(void) ddi_dma_sync(qpair->ctrlr->dma_handle, offset,
+			sizeof(struct nvme_command), DDI_DMA_SYNC_FORDEV); 
 
 	if (++qpair->sq_tail == qpair->num_entries)
 		qpair->sq_tail = 0;
 
-	membar_enter();
 	nvme_mmio_write_4(qpair->ctrlr, doorbell[qpair->id].sq_tdbl,
 	    qpair->sq_tail);
+
+	membar_producer();
 
 	qpair->num_cmds ++;
 
@@ -401,9 +380,8 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_tracker *tr)
 	int			err;
 	ddi_dma_handle_t	dmah;
 	ddi_dma_cookie_t        *dmac = NULL;
-	int dmac_size = 0;
 
-	if (tr->payload_size > 0)
+	if (tr->payload_size > 0 || tr->xfer)
 	{
 		if (tr->xfer)
 		{
@@ -411,13 +389,11 @@ nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_tracker *tr)
 			ASSERT(tr->xfer->x_ndmac != 0);
 			/* xfer is already mapped and ready with cookies */
 			dmac = &tr->xfer->x_dmac;		
-			dmac_size = tr->xfer->x_ndmac;
 		}
 		else
 			dmah =  tr->qpair->ctrlr->dma_handle;
 
-		nvme_payload_map(tr, dmah, dmac, dmac_size,
-				tr->payload, tr->payload_size);
+		nvme_payload_map(tr, dmah, dmac, tr->payload, tr->payload_size);
 	}
 	nvme_qpair_submit_cmd(tr->qpair, tr);
 }

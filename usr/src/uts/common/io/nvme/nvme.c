@@ -61,7 +61,7 @@ static bd_ops_t nvme_blk_ops =
 	.o_drive_info = nvme_blk_driveinfo,
 	.o_media_info = nvme_blk_mediainfo,
 	.o_devid_init = nvme_blk_devid_init,
-	.o_sync_cache = NULL,
+	.o_sync_cache = nvme_blk_flush, 
 	.o_read = nvme_blk_read,
 	.o_write = nvme_blk_write,
 };
@@ -83,7 +83,7 @@ static struct dev_ops nvme_dev_ops =
 	.devo_cb_ops = NULL,
 	.devo_bus_ops = NULL,
 	.devo_power = NULL,
-	.devo_quiesce = nvme_quiesce,
+	.devo_quiesce = ddi_quiesce_not_needed,
 };
 
 extern struct mod_ops mod_driverops;
@@ -132,14 +132,14 @@ static ddi_dma_attr_t nvme_bd_dma_attr =
         DMA_ATTR_V0,                    /* dma_attr version     */
         0,                              /* dma_attr_addr_lo     */
         0xFFFFFFFFFFFFFFFFull,          /* dma_attr_addr_hi     */
-        0x00000000FFFFFFFFull,          /* dma_attr_count_max   */
-        4096,		                     /* dma_attr_align       */
-        1,                              /* dma_attr_burstsizes  */
-        1,                              /* dma_attr_minxfer     */
+        0xFFFFFFFFFFFFFFFFull,          /* dma_attr_count_max   */
+        1,                           /* dma_attr_align       */
+        4096,                           /* dma_attr_burstsizes  */
+        1,                            /* dma_attr_minxfer     */
         4096,				/* dma_attr_maxxfer     */
         0xFFFFFFFFFFFFFFFFull,          /* dma_attr_seg         */
         2,                              /* dma_attr_sgllen      */
-        1,                              /* dma_attr_granular    */
+        4096,                           /* dma_attr_granular    */
   	0,
 };
 
@@ -172,22 +172,44 @@ nvme_dump_completion(struct nvme_completion *cpl)
 }
 
 /* IO operation completed */
-static void
+void
 nvme_io_completed(void *arg, const struct nvme_completion *status, struct nvme_tracker *tr)
 {
 	bd_xfer_t *xfer = tr->xfer;
 	struct nvme_namespace *ns = arg;
+	int ret;
 
-	/* release the tracker. If the operation completed with error,
-	*  complete blkdev request with EIO */
-	nvme_free_tracker(tr);
+	tr->ndmac_completed ++;
 
-	ASSERT(xfer != NULL);
+	if (tr->ndmac_completed == xfer->x_ndmac || 
+		tr->cmd.opc == NVME_OPC_FLUSH)
+	{
+		nvme_free_tracker(tr);
 
-	if (status->sf_sc || status->sf_sct)
-		bd_xfer_done(xfer, EIO);
+		if (status->sf_sc || status->sf_sct)
+			ret = EIO;
+		else
+			ret = 0;
+
+		bd_xfer_done(xfer, ret);
+	}
 	else
-		bd_xfer_done(xfer, 0);
+	{
+		int blk_size = nvme_ns_get_sector_size(ns);
+
+		int blks_done = xfer->x_dmac.dmac_size / blk_size;
+		/* we are going to issue next IO request, so let`s update */
+		/* the block number */
+		*(uint64_t *)&tr->cmd.cdw10 += blks_done;
+
+		/* get next xfer cookie */
+		(void) ddi_dma_nextcookie(xfer->x_dmah, &xfer->x_dmac);
+
+		/* and set new length */
+		tr->cmd.cdw12 = (xfer->x_dmac.dmac_size / blk_size) - 1;
+
+		nvme_qpair_submit_request(tr->qpair, tr);
+	}
 }
 	
 static int
@@ -196,19 +218,16 @@ nvme_blk_read(void *arg, bd_xfer_t *xfer)
 	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
 	int ret;
 
-	if (xfer->x_flags & BD_XFER_POLL)
-		return EIO;
-
 	if ((xfer->x_blkno + xfer->x_nblks) > nvme_ns_get_size(ns))	 
 		return EINVAL;
 
 	/* issue READ cmd, put it into the NVMe command queue */
 	/* after command completiom the nvme_io_completed callback */
 	/* will be called */
-	ret = nvme_ns_cmd_read(ns, xfer, nvme_io_completed, ns);
+	ret = nvme_ns_start_io(ns, xfer, nvme_io_completed, ns, NVME_OPC_READ);
 	if (ret != 0)
 		bd_xfer_done(xfer, ret);
-	/* TODO: wait for timeout, then cancel request and return with error */
+
 	return DDI_SUCCESS; 
 }
 
@@ -218,17 +237,14 @@ nvme_blk_write(void *arg, bd_xfer_t *xfer)
 	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
 	int ret;
 
-	if (xfer->x_flags & BD_XFER_POLL)
-		return EIO;
-
 	if ((xfer->x_blkno + xfer->x_nblks) > ns->data.nsze)	 
 		return EINVAL;
 	
 	/* issue WRITE command and put it into NVMe command queue */
-	ret = nvme_ns_cmd_write(ns, xfer, nvme_io_completed, ns);
+	ret = nvme_ns_start_io(ns, xfer, nvme_io_completed, ns, NVME_OPC_WRITE);
 	if (ret != 0)
 		bd_xfer_done(xfer, ret);
-	/* TODO: wait for timeout, then cancel request and exit with error */
+
 	return DDI_SUCCESS; 
 }
 
@@ -238,10 +254,7 @@ nvme_blk_flush(void *arg, bd_xfer_t *xfer)
 	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
 	int ret;
 
-	if (xfer->x_flags & BD_XFER_POLL)
-		return EIO;
-
-	ret = nvme_ns_cmd_flush(ns, xfer, nvme_io_completed, ns);
+	ret = nvme_ns_start_io(ns, xfer, nvme_io_completed, ns, NVME_OPC_FLUSH);
 	if (ret != 0)
 		bd_xfer_done(xfer, ret);
 
@@ -260,8 +273,8 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 
 	instance = ddi_get_instance(devinfo);
 
-	printf("CPU cpu is %d\n", CPU->cpu_id);
-	printf("total CPUs %d\n", ncpus);
+	printf("revision 1.5\n");
+	printf("PAGESIZE is %d\n", (int)PAGESIZE);
 
 	switch (cmd)
 	{
@@ -377,6 +390,8 @@ nvme_detach(dev_info_t *devinfo, ddi_detach_cmd_t cmd)
 	dmah = nvme->dma_handle;
 	dmaac = nvme->dma_acc;
  
+	printf("DETACH CALLED!!\n");
+
 	/* detach/free blkdev handles, we are going to off-line */
 	for (i = 0; i < nvme->cdata.nn; i ++)
 	{
@@ -405,13 +420,6 @@ nvme_detach(dev_info_t *devinfo, ddi_detach_cmd_t cmd)
 	return DDI_SUCCESS;
 }
 
-int
-nvme_quiesce(dev_info_t *dev)
-{
-	return -1;
-}
-
-
 static void
 nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
 {
@@ -419,7 +427,7 @@ nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
 
 	ASSERT(ns->ctrlr->cdata.nn != 0);
 
-	drive->d_maxxfer = nvme_ns_get_max_io_xfer_size(ns); 
+	drive->d_maxxfer = 4096; 
 	/* let`s assume that a few namespaces share one IO qpair */
 	/* that is true in the worst case */
 	drive->d_qsize = NVME_IO_ENTRIES / ns->ctrlr->cdata.nn;
@@ -437,6 +445,8 @@ nvme_blk_mediainfo(void *arg, bd_media_t *media)
 	media->m_nblks = nvme_ns_get_num_sectors(ns); 
 	media->m_blksize = nvme_ns_get_sector_size(ns);
 	media->m_readonly = B_FALSE;
+
+	printf("mediainfo: blksize %d!\n", media->m_blksize);
 	return 0;
 }
 
@@ -485,31 +495,28 @@ int _info(struct modinfo *modinfop)
 }
 
 void
-nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_t *dmac, int dmac_size, void *kaddr, size_t payload_size)
+nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_t *dmac, void *kaddr, size_t payload_size)
 {
 	/* Let`s implement Scatter/Gather. Some days.. */
 	ddi_dma_cookie_t cookie[NVME_MAX_PRP_LIST_ENTRIES];
-	uint_t cookie_count, cur_nseg;
+	uint_t cookie_count;
 	int res;
-	/*
-	 * Note that we specified PAGESIZE for alignment and max
-	 *  segment size when creating the bus dma tags.  So here
-	 *  we can safely just transfer each segment to its
-	 *  associated PRP entry.
-	 */
+
 	ASSERT(tr != NULL);
 	ASSERT(tr->qpair != NULL);
 
-	/* we do not use S/G, so only prp1 and prp2 needs to be set up */
-	if (dmac)
+	/* we limit the IO transaction size to 4k */
+	/* so only prp1 and prp2 needs to be set up */
+	/* Note: flush comes with xfer without xfer->x_nblks set */
+	if (dmac && payload_size)
 	{
-		ASSERT(dmac_size <= 2);
-
-		tr->cmd.prp1 = dmac->dmac_laddress;
-		if (dmac_size > 1)
-			tr->cmd.prp2 = dmac[1].dmac_laddress;
+		uint64_t prp1 = dmac->dmac_laddress;
+		uint64_t prp2 = (dmac->dmac_laddress + dmac->dmac_size) & (PAGESIZE - 1);
+		tr->cmd.prp1 = prp1; 
+		if (prp2 != (prp1 & (PAGESIZE - 1)))
+			tr->cmd.prp2 = prp2;
 	}
-	else
+	else if (payload_size)
 	{
 		res = ddi_dma_addr_bind_handle(dmah, (struct as *)NULL,
 						 (caddr_t)kaddr, payload_size,
@@ -524,11 +531,8 @@ nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_
 				/* shall we be more delicate here ? */
 				panic("nvme_payload_map: cannot map DMA");
 		}
-		ASSERT(cookie_count <= 2);
+		ASSERT(cookie_count <= 1);
 
 		tr->cmd.prp1 = cookie[0].dmac_laddress;
-
-		if (cookie_count > 1)
-			tr->cmd.prp2 = cookie[1].dmac_laddress;
 	}
 }
