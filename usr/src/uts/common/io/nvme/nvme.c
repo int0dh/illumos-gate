@@ -117,7 +117,7 @@ static ddi_dma_attr_t nvme_req_dma_attr =
         0,                              /* dma_attr_addr_lo     */
         0xFFFFFFFFFFFFFFFFull,          /* dma_attr_addr_hi     */
         0x00000000FFFFFFFFull,          /* dma_attr_count_max   */
-        4096,		                     /* dma_attr_align       */
+        4096,				/* dma_attr_align       */
         1,                              /* dma_attr_burstsizes  */
         1,                              /* dma_attr_minxfer     */
         (128 * 1024),			/* dma_attr_maxxfer     */
@@ -133,43 +133,15 @@ static ddi_dma_attr_t nvme_bd_dma_attr =
         0,                              /* dma_attr_addr_lo     */
         0xFFFFFFFFFFFFFFFFull,          /* dma_attr_addr_hi     */
         0xFFFFFFFFFFFFFFFFull,          /* dma_attr_count_max   */
-        1,                           /* dma_attr_align       */
-        4096,                           /* dma_attr_burstsizes  */
-        1,                            /* dma_attr_minxfer     */
+        1,                              /* dma_attr_align       */
+        512,                            /* dma_attr_burstsizes  */
+        512,                            /* dma_attr_minxfer     */
         4096,				/* dma_attr_maxxfer     */
-        0xFFFFFFFFFFFFFFFFull,          /* dma_attr_seg         */
+        4095,                           /* dma_attr_seg         */
         2,                              /* dma_attr_sgllen      */
         4096,                           /* dma_attr_granular    */
   	0,
 };
-
-void
-nvme_dump_command(struct nvme_command *cmd)
-{
-#if 0
-	printf("opc:%lx f:%lx r1:%lx cid:%lx nsid:%lx r2:%lx r3:%lx "
-	    "mptr:%qx prp1:%qx prp2:%qx cdw:%x %x %x %x %x %x\n",
-	    cmd->opc, cmd->fuse, cmd->rsvd1, cmd->cid, cmd->nsid,
-	    cmd->rsvd2, cmd->rsvd3,
-	    (long long unsigned int)cmd->mptr,
-	    (long long unsigned int)cmd->prp1,
-	    (long long unsigned int)cmd->prp2,
-	    cmd->cdw10, cmd->cdw11, cmd->cdw12, cmd->cdw13, cmd->cdw14,
-	    cmd->cdw15);
-#endif
-}
-
-void
-nvme_dump_completion(struct nvme_completion *cpl)
-{
-#if 0
-	printf("cdw0:%08x sqhd:%04x sqid:%04x "
-	    "cid:%04x p:%x sc:%02x sct:%x m:%x dnr:%x\n",
-	    cpl->cdw0, cpl->sqhd, cpl->sqid,
-	    cpl->cid, cpl->p, cpl->sf_sc, cpl->sf_sct, cpl->sf_m,
-	    cpl->sf_dnr);
-#endif
-}
 
 /* IO operation completed */
 void
@@ -390,8 +362,6 @@ nvme_detach(dev_info_t *devinfo, ddi_detach_cmd_t cmd)
 	dmah = nvme->dma_handle;
 	dmaac = nvme->dma_acc;
  
-	printf("DETACH CALLED!!\n");
-
 	/* detach/free blkdev handles, we are going to off-line */
 	for (i = 0; i < nvme->cdata.nn; i ++)
 	{
@@ -427,7 +397,11 @@ nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
 
 	ASSERT(ns->ctrlr->cdata.nn != 0);
 
-	drive->d_maxxfer = 4096; 
+	/* let`s limit the IO transfer size to 4k, so we do not have *
+	* to deal with PRP list. The SGL looks more interesting (few *
+	* DMA objects of one blkdev xfer may be easily set up in one *
+	* request), but this is not supported by Qemu NVMe implementation */
+	drive->d_maxxfer = PAGESIZE; 
 	/* let`s assume that a few namespaces share one IO qpair */
 	/* that is true in the worst case */
 	drive->d_qsize = NVME_IO_ENTRIES / ns->ctrlr->cdata.nn;
@@ -445,8 +419,6 @@ nvme_blk_mediainfo(void *arg, bd_media_t *media)
 	media->m_nblks = nvme_ns_get_num_sectors(ns); 
 	media->m_blksize = nvme_ns_get_sector_size(ns);
 	media->m_readonly = B_FALSE;
-
-	printf("mediainfo: blksize %d!\n", media->m_blksize);
 	return 0;
 }
 
@@ -460,10 +432,9 @@ nvme_blk_devid_init(void *arg, dev_info_t *devinfo, ddi_devid_t *devid)
 
 	if (ddi_devid_init(devinfo, DEVID_ATA_SERIAL, sizeof(ns_id), ns_id, devid) != DDI_SUCCESS)
 	{
-		printf("cannot build device id!\n");
+		dev_err(devinfo, CE_WARN, "cannot build device id!");
 		return DDI_FAILURE;
 	}
-	printf("device id created!\n");
 	return DDI_SUCCESS;
 }
 
@@ -473,19 +444,17 @@ int _init(void)
 
 	bd_mod_init(&nvme_dev_ops);
 
-	if ((rv = mod_install(&modlinkage)) != 0) {
-		printf("mod_install has returned %d\n", rv);
+	if ((rv = mod_install(&modlinkage)) != 0)
 		bd_mod_fini(&nvme_dev_ops);
-	}
+
 	return rv;
 }
 
 int _fini(void)
 {
 	if (mod_remove(&modlinkage) == 0)
-	{
 		bd_mod_fini(&nvme_dev_ops);
-	}
+
 	return DDI_SUCCESS;
 }
 
@@ -515,6 +484,8 @@ nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_
 		tr->cmd.prp1 = prp1; 
 		if (prp2 != (prp1 & (PAGESIZE - 1)))
 			tr->cmd.prp2 = prp2;
+		else
+			tr->cmd.prp2 = 0;
 	}
 	else if (payload_size)
 	{
