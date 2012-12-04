@@ -46,7 +46,7 @@
 #include "nvme_private.h"
 
 int
-nvme_ctrlr_cmd_identify_controller(struct nvme_controller *ctrlr, void *payload,
+nvme_ctrlr_cmd_identify_controller(struct nvme_controller *ctrlr, uint64_t payload,
 	nvme_cb_fn_t cb_fn, void *cb_arg)
 {
 	struct nvme_command *cmd;
@@ -73,7 +73,7 @@ nvme_ctrlr_cmd_identify_controller(struct nvme_controller *ctrlr, void *payload,
 
 int
 nvme_ctrlr_cmd_identify_namespace(struct nvme_controller *ctrlr, uint16_t nsid,
-	void *payload, nvme_cb_fn_t cb_fn, void *cb_arg)
+	uint64_t payload, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
 	struct nvme_tracker *tr;
 	struct nvme_command *cmd;
@@ -300,28 +300,6 @@ nvme_ctrlr_cmd_asynchronous_event_request(struct nvme_controller *ctrlr,
 
 	cmd = &tr->cmd;
 	cmd->opc = NVME_OPC_ASYNC_EVENT_REQUEST;
-
-	return nvme_ctrlr_submit_admin_request(ctrlr, tr);
-}
-
-int
-nvme_ctrlr_cmd_get_health_information_page(struct nvme_controller *ctrlr,
-    uint32_t nsid, struct nvme_health_information_page *payload,
-    nvme_cb_fn_t cb_fn, void *cb_arg)
-{
-	struct nvme_tracker *tr;
-	struct nvme_command *cmd;
-
-	tr = nvme_allocate_tracker(&ctrlr->adminq, payload, sizeof(*payload), cb_fn, cb_arg);
-
-	if (tr == NULL)
-		return EAGAIN;
-
-	cmd = &tr->cmd;
-	cmd->opc = NVME_OPC_GET_LOG_PAGE;
-	cmd->nsid = nsid;
-	cmd->cdw10 = ((sizeof(*payload)/sizeof(uint32_t)) - 1) << 16;
-	cmd->cdw10 |= NVME_LOG_HEALTH_INFORMATION;
 
 	return nvme_ctrlr_submit_admin_request(ctrlr, tr);
 }

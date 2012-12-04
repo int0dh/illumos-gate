@@ -92,11 +92,14 @@ nvme_ns_construct(struct nvme_namespace *ns, uint16_t id,
 {
 	struct nvme_completion	cpl;
 	int			status;
+	int ns_data_offset;
 
 	ns->ctrlr = ctrlr;
 	ns->id = id;
 
-	nvme_ctrlr_cmd_identify_namespace(ctrlr, id, &ns->data,
+	ns_data_offset = ctrlr->ns_data_phys + sizeof(struct nvme_namespace) * (id - 1) + offsetof(struct nvme_namespace, data);
+
+	nvme_ctrlr_cmd_identify_namespace(ctrlr, id, ns_data_offset,
 		    nvme_admin_cb, &cpl);
 
 	if (cpl.sf_sc || cpl.sf_sct)

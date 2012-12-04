@@ -143,59 +143,67 @@ static ddi_dma_attr_t nvme_bd_dma_attr =
   	0,
 };
 
-/* IO operation completed */
-void
+/* called when IO operation gets completed */
+static void
 nvme_io_completed(void *arg, const struct nvme_completion *status, struct nvme_tracker *tr)
 {
 	bd_xfer_t *xfer = tr->xfer;
 	struct nvme_namespace *ns = arg;
 	int ret;
 
+	/* check the status of completed IO. if an error - abort with EIO */
+	if (status->sf_sc || status->sf_sct)
+	{
+		nvme_free_tracker(tr);
+		bd_xfer_done(xfer, EIO);
+		return;
+	}
+	/* increase the number of completed DMA transactions */
+	/* if we done all the xfer DMA cookies - return xfer to blkdev */
 	tr->ndmac_completed ++;
 
 	if (tr->ndmac_completed == xfer->x_ndmac || 
 		tr->cmd.opc == NVME_OPC_FLUSH)
 	{
 		nvme_free_tracker(tr);
-
-		if (status->sf_sc || status->sf_sct)
-			ret = EIO;
-		else
-			ret = 0;
-
 		bd_xfer_done(xfer, ret);
 	}
 	else
 	{
+		/* there is still some work to do. get next DMA cookie and */
+		/* issue IO request again. We do reuse the tracker here */
+		/* to avoid extra allocations/deallocations */
 		int blk_size = nvme_ns_get_sector_size(ns);
 
 		int blks_done = xfer->x_dmac.dmac_size / blk_size;
-		/* we are going to issue next IO request, so let`s update */
+		/* we are going to issue next IO request, so a) let`s update */
 		/* the block number */
 		*(uint64_t *)&tr->cmd.cdw10 += blks_done;
 
-		/* get next xfer cookie */
+		/* b) get next xfer cookie */
 		(void) ddi_dma_nextcookie(xfer->x_dmah, &xfer->x_dmac);
 
-		/* and set new length */
+		/* c) and set new length */
 		tr->cmd.cdw12 = (xfer->x_dmac.dmac_size / blk_size) - 1;
 
+		/* submit updated tracker into the same qpair as it was */
+		/* allocated from */
 		nvme_qpair_submit_request(tr->qpair, tr);
 	}
 }
-	
+/* blkdev READ callback, called when blkdev wants to read some data from device */	
 static int
 nvme_blk_read(void *arg, bd_xfer_t *xfer)
 {
 	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
 	int ret;
 
-	if ((xfer->x_blkno + xfer->x_nblks) > nvme_ns_get_size(ns))	 
+	if ((xfer->x_blkno + xfer->x_nblks) > ns->data.nsze)
 		return EINVAL;
 
 	/* issue READ cmd, put it into the NVMe command queue */
-	/* after command completiom the nvme_io_completed callback */
-	/* will be called */
+	/* the nvme_io_completed callback will be called */
+	/* after command completion */
 	ret = nvme_ns_start_io(ns, xfer, nvme_io_completed, ns, NVME_OPC_READ);
 	if (ret != 0)
 		bd_xfer_done(xfer, ret);
@@ -203,6 +211,7 @@ nvme_blk_read(void *arg, bd_xfer_t *xfer)
 	return DDI_SUCCESS; 
 }
 
+/* blkedv WRITE callback */
 static int
 nvme_blk_write(void *arg, bd_xfer_t *xfer)
 {
@@ -233,6 +242,54 @@ nvme_blk_flush(void *arg, bd_xfer_t *xfer)
 	return DDI_SUCCESS;
 }
 
+static void
+nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
+{
+	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
+
+	ASSERT(ns->ctrlr->cdata.nn != 0);
+
+	/* we limit the IO transfer size to 4k, so we do not have */
+	/* to deal with PRP list. The SGL looks more interesting (few */
+	/* DMA objects of one blkdev xfer may be easily set up in one */
+	/* request), but SGL is not supported by Qemu NVMe implementation */
+	drive->d_maxxfer = min(PAGESIZE, ns->ctrlr->max_xfer_size); 
+	/* let`s assume that a few namespaces share one IO qpair */
+	/* that is true in the worst case */
+	drive->d_qsize = NVME_IO_ENTRIES / ns->ctrlr->cdata.nn;
+	drive->d_removable = B_FALSE;
+	drive->d_hotpluggable = B_FALSE;
+	drive->d_target = ddi_get_instance(ns->ctrlr->devinfo); 
+	drive->d_lun = ((char *)ns - (char *)&ns->ctrlr->ns[0]) / sizeof(struct nvme_namespace);
+}
+
+static int
+nvme_blk_mediainfo(void *arg, bd_media_t *media)
+{
+	struct nvme_namespace *ns = (struct nvme_namespace *)arg;	
+
+	media->m_nblks = nvme_ns_get_num_sectors(ns); 
+	media->m_blksize = nvme_ns_get_sector_size(ns);
+	media->m_readonly = B_FALSE;
+	return 0;
+}
+
+int
+nvme_blk_devid_init(void *arg, dev_info_t *devinfo, ddi_devid_t *devid)
+{
+	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
+	char ns_id[0x100];
+
+	memcpy(ns_id, &ns->data, sizeof(ns_id));
+
+	if (ddi_devid_init(devinfo, DEVID_ATA_SERIAL, sizeof(ns_id), ns_id, devid) != DDI_SUCCESS)
+	{
+		dev_err(devinfo, CE_WARN, "cannot build device id!");
+		return DDI_FAILURE;
+	}
+	return DDI_SUCCESS;
+}
+
 int
 nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 {
@@ -242,10 +299,12 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	size_t nvme_len = sizeof(*nvme);
 	ddi_acc_handle_t dmaac;
 	ddi_dma_handle_t dmah;
+	ddi_dma_cookie_t cookie[2];
+	u_int cookie_count;
 
 	instance = ddi_get_instance(devinfo);
 
-	printf("revision 1.5\n");
+	printf("revision 1.6\n");
 	printf("PAGESIZE is %d\n", (int)PAGESIZE);
 
 	switch (cmd)
@@ -277,6 +336,19 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 		dev_err(devinfo, CE_WARN, "cannot allocate DMA mem");
 		goto dma_handle_free;
 	}
+	if (ddi_dma_addr_bind_handle(dmah,
+			(struct as *)NULL, (caddr_t)nvme, sizeof(struct nvme_controller),
+			DDI_DMA_RDWR | DDI_DMA_CONSISTENT,
+			DDI_DMA_SLEEP, 0, cookie, &cookie_count) != DDI_DMA_MAPPED)
+	{
+		dev_err(devinfo, CE_WARN, "cannot map NVMe softc structure");
+		goto dma_handle_free;
+	}
+	nvme->cdata_phys = cookie[0].dmac_address +
+			 offsetof(struct nvme_controller, cdata);
+	nvme->ns_data_phys = cookie[0].dmac_address +
+			 offsetof(struct nvme_controller, ns[0]);
+
 	if (ddi_regs_map_setup(devinfo, 1, (caddr_t *)&nvme->nvme_regs_base,
 				0, 0, &nvme_dev_attr, 
 				&nvme->nvme_regs_handle) != DDI_SUCCESS)
@@ -390,53 +462,6 @@ nvme_detach(dev_info_t *devinfo, ddi_detach_cmd_t cmd)
 	return DDI_SUCCESS;
 }
 
-static void
-nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
-{
-	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
-
-	ASSERT(ns->ctrlr->cdata.nn != 0);
-
-	/* let`s limit the IO transfer size to 4k, so we do not have *
-	* to deal with PRP list. The SGL looks more interesting (few *
-	* DMA objects of one blkdev xfer may be easily set up in one *
-	* request), but this is not supported by Qemu NVMe implementation */
-	drive->d_maxxfer = PAGESIZE; 
-	/* let`s assume that a few namespaces share one IO qpair */
-	/* that is true in the worst case */
-	drive->d_qsize = NVME_IO_ENTRIES / ns->ctrlr->cdata.nn;
-	drive->d_removable = B_FALSE;
-	drive->d_hotpluggable = B_FALSE;
-	drive->d_target = ddi_get_instance(ns->ctrlr->devinfo); 
-	drive->d_lun = ((char *)ns - (char *)&ns->ctrlr->ns[0]) / sizeof(struct nvme_namespace);
-}
-
-static int
-nvme_blk_mediainfo(void *arg, bd_media_t *media)
-{
-	struct nvme_namespace *ns = (struct nvme_namespace *)arg;	
-
-	media->m_nblks = nvme_ns_get_num_sectors(ns); 
-	media->m_blksize = nvme_ns_get_sector_size(ns);
-	media->m_readonly = B_FALSE;
-	return 0;
-}
-
-int
-nvme_blk_devid_init(void *arg, dev_info_t *devinfo, ddi_devid_t *devid)
-{
-	struct nvme_namespace *ns = (struct nvme_namespace *)arg;
-	char ns_id[0x100];
-
-	memcpy(ns_id, &ns->data, sizeof(ns_id));
-
-	if (ddi_devid_init(devinfo, DEVID_ATA_SERIAL, sizeof(ns_id), ns_id, devid) != DDI_SUCCESS)
-	{
-		dev_err(devinfo, CE_WARN, "cannot build device id!");
-		return DDI_FAILURE;
-	}
-	return DDI_SUCCESS;
-}
 
 int _init(void)
 {
@@ -464,46 +489,44 @@ int _info(struct modinfo *modinfop)
 }
 
 void
-nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_t *dmac, void *kaddr, size_t payload_size)
+nvme_map_tracker(struct nvme_tracker *tr)
 {
-	/* Let`s implement Scatter/Gather. Some days.. */
-	ddi_dma_cookie_t cookie[NVME_MAX_PRP_LIST_ENTRIES];
-	uint_t cookie_count;
+	ddi_dma_cookie_t *dmac;
+	uint64_t prp1, prp2;
 	int res;
 
-	ASSERT(tr != NULL);
-	ASSERT(tr->qpair != NULL);
+
+	/* FLUSH flushes whole namespace, so no PRP setup is required */
+	if (tr->cmd.opc  == NVME_OPC_FLUSH)
+		return;
 
 	/* we limit the IO transaction size to 4k */
 	/* so only prp1 and prp2 needs to be set up */
 	/* Note: flush comes with xfer without xfer->x_nblks set */
-	if (dmac && payload_size)
+	if (tr->xfer)
 	{
-		uint64_t prp1 = dmac->dmac_laddress;
-		uint64_t prp2 = (dmac->dmac_laddress + dmac->dmac_size) & (PAGESIZE - 1);
-		tr->cmd.prp1 = prp1; 
-		if (prp2 != (prp1 & (PAGESIZE - 1)))
-			tr->cmd.prp2 = prp2;
-		else
-			tr->cmd.prp2 = 0;
-	}
-	else if (payload_size)
-	{
-		res = ddi_dma_addr_bind_handle(dmah, (struct as *)NULL,
-						 (caddr_t)kaddr, payload_size,
-						DDI_DMA_RDWR | DDI_DMA_CONSISTENT,
-						DDI_DMA_DONTWAIT, 0, cookie,
-						&cookie_count);
-		switch (res)
+		if (tr->xfer->x_ndmac)
 		{
-			case DDI_DMA_MAPPED:
-				break;
-			default:
-				/* shall we be more delicate here ? */
-				panic("nvme_payload_map: cannot map DMA");
+			dmac = &tr->xfer->x_dmac;
+			prp1 = dmac->dmac_laddress;
+			prp2 = (dmac->dmac_laddress + dmac->dmac_size) & ~(PAGESIZE - 1);
 		}
-		ASSERT(cookie_count <= 1);
-
-		tr->cmd.prp1 = cookie[0].dmac_laddress;
+		else
+			return;
+	
 	}
+	else if (tr->payload_size)
+	{
+		
+		prp1 = tr->payload;
+		prp2 = (tr->payload + tr->payload_size) & ~(PAGESIZE - 1);
+	}
+	else
+		return;
+
+	tr->cmd.prp1 = prp1; 
+	prp1 &= ~(PAGESIZE - 1);
+
+	if (prp2 != prp1)
+		tr->cmd.prp2 = prp2;
 }

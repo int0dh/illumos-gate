@@ -95,7 +95,7 @@ struct nvme_tracker {
 	nvme_cb_fn_t			cb_fn;
 	void				*cb_arg;
 	bd_xfer_t			*xfer;
-	void				*payload;
+	uint64_t			payload;
 	size_t				payload_size;
 
 	timeout_id_t			timeout;
@@ -175,6 +175,10 @@ struct nvme_controller {
 	ddi_softint_handle_t    *soft_intr_handle;
 	int			intr_size;
 
+	/* physical address of nvme_controller structure */
+	uint64_t		cdata_phys;
+	uint64_t		ns_data_phys;
+
 	uint32_t		ready_timeout_in_ms;
 	ddi_acc_handle_t        nvme_regs_handle;
 	uint8_t			*nvme_regs_base;
@@ -243,10 +247,10 @@ int	nvme_ctrlr_cmd_get_feature(struct nvme_controller *ctrlr,
 				   void *payload, uint32_t payload_size,
 				   nvme_cb_fn_t cb_fn, void *cb_arg);
 int	nvme_ctrlr_cmd_identify_controller(struct nvme_controller *ctrlr,
-					   void *payload,
+					   uint64_t payload,
 					   nvme_cb_fn_t cb_fn, void *cb_arg);
 int	nvme_ctrlr_cmd_identify_namespace(struct nvme_controller *ctrlr,
-					  uint16_t nsid, void *payload,
+					  uint16_t nsid, uint64_t payload,
 					  nvme_cb_fn_t cb_fn, void *cb_arg);
 int	nvme_ctrlr_cmd_set_interrupt_coalescing(struct nvme_controller *ctrlr,
 						uint32_t microseconds,
@@ -283,7 +287,7 @@ int	nvme_ctrlr_cmd_asynchronous_event_request(struct nvme_controller *ctrlr,
 void	nvme_admin_cb(void *arg, const struct nvme_completion *status,
 		struct nvme_tracker *tr);
 
-void	nvme_payload_map(struct nvme_tracker *tr, ddi_dma_handle_t dmah, ddi_dma_cookie_t *dmac, void *addr, size_t len);
+void	nvme_map_tracker(struct nvme_tracker *tr);
 
 int	nvme_ctrlr_reset(struct nvme_controller *ctrlr);
 /* ctrlr defined as void * to allow use with config_intrhook. */
@@ -317,7 +321,7 @@ void	nvme_dump_command(struct nvme_command *cmd);
 void	nvme_dump_completion(struct nvme_completion *cpl);
 
 static __inline struct nvme_tracker*
-nvme_allocate_tracker(struct nvme_qpair *q, void *payload, uint32_t payload_size, nvme_cb_fn_t cb_fn, void *cb_arg)
+nvme_allocate_tracker(struct nvme_qpair *q, uint64_t payload, uint32_t payload_size, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
 	struct nvme_tracker *tr;
 

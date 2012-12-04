@@ -377,23 +377,6 @@ nvme_qpair_submit_cmd(struct nvme_qpair *qpair, struct nvme_tracker *tr)
 void
 nvme_qpair_submit_request(struct nvme_qpair *qpair, struct nvme_tracker *tr)
 {
-	int			err;
-	ddi_dma_handle_t	dmah;
-	ddi_dma_cookie_t        *dmac = NULL;
-
-	if (tr->payload_size > 0 || tr->xfer)
-	{
-		if (tr->xfer)
-		{
-			/* not DMA-mapped xfers are not supported yet */
-			ASSERT(tr->xfer->x_ndmac != 0);
-			/* xfer is already mapped and ready with cookies */
-			dmac = &tr->xfer->x_dmac;		
-		}
-		else
-			dmah =  tr->qpair->ctrlr->dma_handle;
-
-		nvme_payload_map(tr, dmah, dmac, tr->payload, tr->payload_size);
-	}
+	nvme_map_tracker(tr);
 	nvme_qpair_submit_cmd(tr->qpair, tr);
 }

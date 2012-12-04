@@ -266,13 +266,13 @@ nvme_async_event_cb(void *arg, const struct nvme_completion *status)
 }
 #endif
 
-/*static*/ int
+static int
 nvme_ctrlr_identify(struct nvme_controller *ctrlr)
 {
 	struct nvme_completion	cpl;
 	int ret;
 
-	ret = nvme_ctrlr_cmd_identify_controller(ctrlr, &ctrlr->cdata,
+	ret = nvme_ctrlr_cmd_identify_controller(ctrlr, ctrlr->cdata_phys,
 	    nvme_admin_cb, &cpl);
 
 	if (ret)
