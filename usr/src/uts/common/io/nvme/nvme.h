@@ -192,7 +192,7 @@ struct nvme_registers
 	} doorbell[1] __packed;
 } __packed;
 
-struct nvme_command
+typedef struct nvme_command
 {
 	/* dword 0 */
 	uint16_t opc	:  8;	/* opcode */
@@ -223,9 +223,9 @@ struct nvme_command
 	uint32_t cdw13;		/* command-specific */
 	uint32_t cdw14;		/* command-specific */
 	uint32_t cdw15;		/* command-specific */
-} __packed;
+}  __packed nvme_command_t;
 
-struct nvme_completion {
+typedef struct nvme_completion {
 
 	/* dword 0 */
 	uint32_t cdw0;		/* command-specific */
@@ -245,7 +245,7 @@ struct nvme_completion {
 	uint16_t rsvd2	:  2;
 	uint16_t sf_m	:  1;	/* status field - more */
 	uint16_t sf_dnr	:  1;	/* status field - do not retry */
-} __packed;
+} __packed nvme_completion_t;
 
 struct nvme_dsm_range {
 
@@ -669,57 +669,5 @@ struct nvme_health_information_page {
 
 #define NVME_TEST_MAX_THREADS	128
 
-struct nvme_io_test {
-
-	enum nvme_nvm_opcode	opc;
-	uint32_t		size;
-	uint32_t		time;	/* in seconds */
-	uint32_t		num_threads;
-	uint32_t		flags;
-	uint32_t		io_completed[NVME_TEST_MAX_THREADS];
-};
-
-enum nvme_io_test_flags {
-
-	/*
-	 * Specifies whether dev_refthread/dev_relthread should be
-	 *  called during NVME_BIO_TEST.  Ignored for other test
-	 *  types.
-	 */
-	NVME_TEST_FLAG_REFTHREAD =	0x1,
-};
-
-#ifdef _KERNEL
-
-struct nvme_namespace;
-struct nvme_consumer;
-struct nvme_tracker;
-
-typedef void (*nvme_cb_fn_t)(void *, const struct nvme_completion *, struct nvme_tracker *tr);
-
-enum nvme_namespace_flags {
-	NVME_NS_DEALLOCATE_SUPPORTED	= 0x1,
-	NVME_NS_FLUSH_SUPPORTED		= 0x2,
-};
-
-/* NVM I/O functions */
-int	nvme_ns_start_io(struct nvme_namespace *ns, bd_xfer_t *xfer,
-			nvme_cb_fn_t cb_fn, void *cb_arg,
-			enum nvme_nvm_opcode cmd_code);
-
-int	nvme_ns_cmd_deallocate(struct nvme_namespace *ns, void *payload,
-			       uint8_t num_ranges, nvme_cb_fn_t cb_fn,
-			       void *cb_arg);
-
-/* Namespace helper functions */
-uint32_t	nvme_ns_get_max_io_xfer_size(struct nvme_namespace *ns);
-uint32_t	nvme_ns_get_sector_size(struct nvme_namespace *ns);
-uint64_t	nvme_ns_get_num_sectors(struct nvme_namespace *ns);
-uint64_t	nvme_ns_get_size(struct nvme_namespace *ns);
-uint32_t	nvme_ns_get_flags(struct nvme_namespace *ns);
-const char *	nvme_ns_get_serial_number(struct nvme_namespace *ns);
-const char *	nvme_ns_get_model_number(struct nvme_namespace *ns);
-
-#endif /* _KERNEL */
 
 #endif /* __NVME_H__ */

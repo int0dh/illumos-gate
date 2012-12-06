@@ -45,52 +45,51 @@
 #include "nvme_private.h"
 
 uint32_t
-nvme_ns_get_max_io_xfer_size(struct nvme_namespace *ns)
+nvme_ns_get_max_io_xfer_size(nvme_namespace_t *ns)
 {
 	return ns->ctrlr->max_xfer_size;
 }
 
 uint32_t
-nvme_ns_get_sector_size(struct nvme_namespace *ns)
+nvme_ns_get_sector_size(nvme_namespace_t *ns)
 {
 	return (1 << ns->data.lbaf[0].lbads);
 }
 
 uint64_t
-nvme_ns_get_num_sectors(struct nvme_namespace *ns)
+nvme_ns_get_num_sectors(nvme_namespace_t *ns)
 {
 	return (ns->data.nsze);
 }
 
 uint64_t
-nvme_ns_get_size(struct nvme_namespace *ns)
+nvme_ns_get_size(nvme_namespace_t *ns)
 {
 	return (nvme_ns_get_num_sectors(ns) * nvme_ns_get_sector_size(ns));
 }
 
 uint32_t
-nvme_ns_get_flags(struct nvme_namespace *ns)
+nvme_ns_get_flags(nvme_namespace_t *ns)
 {
 	return (ns->flags);
 }
 
 const char *
-nvme_ns_get_serial_number(struct nvme_namespace *ns)
+nvme_ns_get_serial_number(nvme_namespace_t *ns)
 {
 	return ((const char *)ns->ctrlr->cdata.sn);
 }
 
 const char *
-nvme_ns_get_model_number(struct nvme_namespace *ns)
+nvme_ns_get_model_number(nvme_namespace_t *ns)
 {
 	return ((const char *)ns->ctrlr->cdata.mn);
 }
 
 int
-nvme_ns_construct(struct nvme_namespace *ns, uint16_t id,
-    struct nvme_controller *ctrlr)
+nvme_ns_construct(nvme_namespace_t *ns, uint16_t id, nvme_controller_t *ctrlr)
 {
-	struct nvme_completion	cpl;
+	nvme_completion_t	cpl;
 	int			status;
 	int ns_data_offset;
 
@@ -102,17 +101,14 @@ nvme_ns_construct(struct nvme_namespace *ns, uint16_t id,
 	nvme_ctrlr_cmd_identify_namespace(ctrlr, id, ns_data_offset,
 		    nvme_admin_cb, &cpl);
 
-	if (cpl.sf_sc || cpl.sf_sct)
-	{
-		printf("nvme_identify_namespace failed!\n");
+	if (cpl.sf_sc || cpl.sf_sct) {
 		return (ENXIO);
 	}
-
-	if (ctrlr->cdata.oncs.dsm && ns->data.nsfeat.thin_prov)
+	if (ctrlr->cdata.oncs.dsm && ns->data.nsfeat.thin_prov) {
 		ns->flags |= NVME_NS_DEALLOCATE_SUPPORTED;
-
-	if (ctrlr->cdata.vwc.present)
+	}
+	if (ctrlr->cdata.vwc.present) {
 		ns->flags |= NVME_NS_FLUSH_SUPPORTED;
-
+	}
 	return (0);
 }

@@ -45,13 +45,13 @@
 #include "nvme_private.h"
 
 int
-nvme_ns_start_io(struct nvme_namespace *ns, bd_xfer_t *xfer,
+nvme_ns_start_io(nvme_namespace_t *ns, bd_xfer_t *xfer,
 		 nvme_cb_fn_t cb_fn, void *cb_arg,
 		 enum nvme_nvm_opcode cmd_code)
 {
-	struct nvme_tracker *tr;
-	struct nvme_command *cmd;
-	struct nvme_qpair *q;
+	nvme_tracker_t *tr;
+	nvme_command_t *cmd;
+	nvme_qpair_t *q;
 	int ret;
 	int blk_size = nvme_ns_get_sector_size(ns);
 
@@ -67,24 +67,23 @@ nvme_ns_start_io(struct nvme_namespace *ns, bd_xfer_t *xfer,
 	tr = nvme_allocate_tracker(q, NULL, xfer->x_nblks * blk_size, cb_fn, cb_arg);
 
 	/* no resources in the IO qpair */
-	if (tr == NULL)
+	if (tr == NULL) {
 		return (EAGAIN);
-
+	}
 	tr->xfer = xfer;
 
 	cmd = &tr->cmd;
 	cmd->opc = cmd_code;
 	cmd->nsid = ns->id;
 
-	if (cmd_code != NVME_OPC_FLUSH)
-	{
+	if (cmd_code != NVME_OPC_FLUSH) {
 		*(uint64_t *)&cmd->cdw10 = xfer->x_blkno;
 		cmd->cdw12 = (xfer->x_dmac.dmac_size / blk_size) - 1;
 	}
-	ret = nvme_ctrlr_submit_io_request(ns->ctrlr, tr);
+	ret = nvme_qpair_submit_request(tr, ASYNC);
 
-	if (xfer->x_flags & BD_XFER_POLL)
+	if (xfer->x_flags & BD_XFER_POLL) {
 		ret = nvme_wait_for_completion(q, tr);
-
+	}
 	return ret;
 }
