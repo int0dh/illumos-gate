@@ -373,6 +373,9 @@ nvme_qpair_submit_request(nvme_tracker_t *tr, int sync)
 		if (ret < 0) {
 			ret = ETIMEDOUT;
 		}
+		else
+			ret = 0;
+
 		mutex_exit(&tr->mutex);
 		nvme_free_tracker(tr);
 
