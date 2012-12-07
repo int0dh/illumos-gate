@@ -77,6 +77,7 @@ nvme_ns_start_io(nvme_namespace_t *ns, bd_xfer_t *xfer,
 	cmd->nsid = ns->id;
 
 	if (cmd_code != NVME_OPC_FLUSH) {
+
 		*(uint64_t *)&cmd->cdw10 = xfer->x_blkno;
 		cmd->cdw12 = (xfer->x_dmac.dmac_size / blk_size) - 1;
 	}
@@ -84,7 +85,6 @@ nvme_ns_start_io(nvme_namespace_t *ns, bd_xfer_t *xfer,
 
 	if (xfer->x_flags & BD_XFER_POLL) {
 
-		int blk_size = nvme_ns_get_sector_size(ns);
 		int blks_done, total_blks_done = 0;
 
 		for (;;) {
