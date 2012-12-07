@@ -303,7 +303,7 @@ int	nvme_qpair_construct(nvme_qpair_t *qpair, uint32_t id,
 void	nvme_qpair_submit_cmd(nvme_tracker_t *tr);
 int	nvme_ctrlr_submit_request(nvme_tracker_t *tr, int sync);
 void	nvme_qpair_process_completions(nvme_qpair_t *qpair);
-int	nvme_wait_for_completion(nvme_qpair_t *qpair, nvme_tracker_t *tr);
+int	nvme_wait_for_completion(nvme_tracker_t *tr);
 
 int	nvme_qpair_submit_request(nvme_tracker_t *tr, int sync);
 

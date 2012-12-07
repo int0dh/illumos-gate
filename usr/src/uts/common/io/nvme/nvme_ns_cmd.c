@@ -83,7 +83,30 @@ nvme_ns_start_io(nvme_namespace_t *ns, bd_xfer_t *xfer,
 	ret = nvme_qpair_submit_request(tr, ASYNC);
 
 	if (xfer->x_flags & BD_XFER_POLL) {
-		ret = nvme_wait_for_completion(q, tr);
+
+		int blk_size = nvme_ns_get_sector_size(ns);
+		int blks_done, total_blks_done = 0;
+
+		for (;;) {
+
+			ret = nvme_wait_for_completion(tr);
+			if (ret) {
+				return ret;
+			}
+			blks_done = xfer->x_dmac.dmac_size / blk_size;
+			total_blks_done += blks_done;
+
+			if (total_blks_done == xfer->x_nblks) {
+				break;
+			}
+			ddi_dma_nextcookie(xfer->x_dmah, &xfer->x_dmac);
+
+			*(uint64_t *)&tr->cmd.cdw10 += blks_done;
+			tr->cmd.cdw12 = (xfer->x_dmac.dmac_size / blk_size) - 1;
+		
+			(void) nvme_qpair_submit_request(tr, ASYNC);
+		}
+		ret = 0;
 	}
 	return ret;
 }

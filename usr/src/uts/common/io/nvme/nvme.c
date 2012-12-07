@@ -55,8 +55,7 @@ static int  nvme_blk_flush(void *, bd_xfer_t *xfer);
 
 static char nvme_ident[] = "NVMe block driver";
 
-static bd_ops_t nvme_blk_ops =
-{
+static bd_ops_t nvme_blk_ops = {
 	.o_version = BD_OPS_VERSION_0,
 	.o_drive_info = nvme_blk_driveinfo,
 	.o_media_info = nvme_blk_mediainfo,
@@ -254,7 +253,7 @@ nvme_blk_mediainfo(void *arg, bd_media_t *media)
 {
 	nvme_namespace_t *ns = arg;
 
-	media->m_nblks = nvme_ns_get_num_sectors(ns); 
+	media->m_nblks = nvme_ns_get_num_sectors(ns) - 1; 
 	media->m_blksize = nvme_ns_get_sector_size(ns);
 	media->m_readonly = B_FALSE;
 	return (0);
@@ -290,7 +289,7 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 
 	instance = ddi_get_instance(devinfo);
 
-	printf("revision 1.6\n");
+	printf("revision 1.7\n");
 	printf("PAGESIZE is %d\n", (int)PAGESIZE);
 
 	switch (cmd) {

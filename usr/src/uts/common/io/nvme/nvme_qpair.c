@@ -48,9 +48,36 @@ extern int nvme_qpair_register_interrupt(nvme_qpair_t *q);
 extern int nvme_qpair_unregister_interrupt(nvme_qpair_t *q);
 
 int
-nvme_wait_for_completion(nvme_qpair_t *qpair, nvme_tracker_t *tr)
+nvme_wait_for_completion(nvme_tracker_t *tr)
 {
-	/* IMPLEMENT ME! */
+	nvme_qpair_t *qpair = tr->qpair;
+	nvme_completion_t *cpl;
+	int timeout = 20;
+
+	for (;timeout > 0;) {
+		off_t offset;
+		cpl = &qpair->cpl[qpair->cq_head];
+
+		offset = (off_t)cpl - (off_t)qpair->cmd;
+		(void) ddi_dma_sync(qpair->ctrlr->dma_handle, offset,
+			sizeof(struct nvme_completion), DDI_DMA_SYNC_FORKERNEL); 
+		if (cpl->p != qpair->phase) {
+			DELAY(10);
+			continue;
+		}
+		qpair->sq_head = cpl->sqhd;
+
+		qpair->cq_head ++;
+		if (qpair->cq_head == qpair->num_entries) {
+			qpair->cq_head = 0;
+			qpair->phase = !qpair->phase;
+		}
+		nvme_mmio_write_4(qpair->ctrlr, doorbell[qpair->id].cq_hdbl,
+		    qpair->cq_head);
+
+		qpair->act_tr[tr->cid] = NULL;
+		return 0;
+	}
 	return ETIMEDOUT;
 }
 
@@ -369,13 +396,9 @@ nvme_qpair_submit_request(nvme_tracker_t *tr, int sync)
 
 		deadline = ddi_get_lbolt() + (clock_t)drv_usectohz(3 * 1000000);
 		/* mutex is already held, it is save to cv_timedwait */
-		ret = cv_timedwait(&tr->cv, &tr->mutex, deadline);
-		if (ret < 0) {
+		if (cv_timedwait(&tr->cv, &tr->mutex, deadline) < 0) {
 			ret = ETIMEDOUT;
 		}
-		else
-			ret = 0;
-
 		mutex_exit(&tr->mutex);
 		nvme_free_tracker(tr);
 

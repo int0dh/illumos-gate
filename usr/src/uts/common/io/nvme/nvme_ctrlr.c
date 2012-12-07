@@ -355,7 +355,6 @@ nvme_ctrlr_start(void *ctrlr_arg)
 		nvme_interrupt_disable(ctrlr);
 		return (ENXIO);
 	}
-	printf("create qpairs..\n");	
 	if (nvme_ctrlr_create_qpairs(ctrlr) != 0) {
 		nvme_interrupt_disable(ctrlr);
 		return (ENXIO);
