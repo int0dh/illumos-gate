@@ -41,7 +41,7 @@
 #include <sys/pci.h>
 #include <sys/sysmacros.h>
 #include <sys/cpuvar.h>
-
+#include <sys/sdt.h>
 #include "nvme_private.h"
 
 int
@@ -68,6 +68,7 @@ nvme_ns_start_io(nvme_namespace_t *ns, bd_xfer_t *xfer,
 
 	/* no resources in the IO qpair */
 	if (tr == NULL) {
+		DTRACE_PROBE(no_resources_in_io_qpair);
 		return (EAGAIN);
 	}
 	tr->xfer = xfer;
@@ -80,6 +81,9 @@ nvme_ns_start_io(nvme_namespace_t *ns, bd_xfer_t *xfer,
 
 		*(uint64_t *)&cmd->cdw10 = xfer->x_blkno;
 		cmd->cdw12 = (xfer->x_dmac.dmac_size / blk_size) - 1;
+
+		DTRACE_PROBE3(start_io, size_t, xfer->x_dmac.dmac_size,
+			int, xfer->x_ndmac, int, xfer->x_nblks);
 	}
 	ret = nvme_qpair_submit_request(tr, ASYNC);
 
@@ -104,8 +108,12 @@ nvme_ns_start_io(nvme_namespace_t *ns, bd_xfer_t *xfer,
 			*(uint64_t *)&tr->cmd.cdw10 += blks_done;
 			tr->cmd.cdw12 = (xfer->x_dmac.dmac_size / blk_size) - 1;
 		
-			(void) nvme_qpair_submit_request(tr, ASYNC);
+			ret = nvme_qpair_submit_request(tr, ASYNC);
+			if (ret) {
+				return ret;
+			}
 		}
+		nvme_free_tracker(tr);
 		ret = 0;
 	}
 	return ret;

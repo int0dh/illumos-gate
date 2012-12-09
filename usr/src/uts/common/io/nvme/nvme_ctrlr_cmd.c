@@ -40,7 +40,7 @@
 #include <sys/debug.h>
 #include <sys/pci.h>
 #include <sys/sysmacros.h>
-
+#include <sys/sdt.h>
 #include "nvme.h"
 #include "nvme_private.h"
 
@@ -56,6 +56,7 @@ nvme_ctrlr_cmd_identify_controller(nvme_controller_t *ctrlr, uint64_t payload,
 
 	/* no resources in the admin qpair */
 	if (tr == NULL) {
+		DTRACE_PROBE(no_resources_in_admin_qpair);
 		return (EAGAIN);
 	}
 	cmd = &tr->cmd;
@@ -76,6 +77,7 @@ nvme_ctrlr_cmd_identify_namespace(nvme_controller_t *ctrlr, uint16_t nsid,
 	    sizeof(struct nvme_namespace_data), cb_fn, cb_arg);
 
 	if (tr == NULL) {
+		DTRACE_PROBE(no_resources_in_admin_qpair);
 		return EAGAIN;
 	}
 	cmd = &tr->cmd;
@@ -96,6 +98,7 @@ nvme_ctrlr_cmd_create_io_cq(nvme_controller_t *ctrlr,
 	tr = nvme_allocate_tracker(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
 
 	if (tr == NULL) {
+		DTRACE_PROBE(no_resources_in_admin_qpair);
 		return EAGAIN;
 	}
 	cmd = &tr->cmd;
@@ -118,6 +121,7 @@ nvme_ctrlr_cmd_create_io_sq(nvme_controller_t *ctrlr, nvme_qpair_t *io_que,
 	tr = nvme_allocate_tracker(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
 
 	if (tr == NULL) {
+		DTRACE_PROBE(no_resources_in_admin_qpair);
 		return EAGAIN;
 	}
 	cmd = &tr->cmd;
@@ -140,6 +144,7 @@ nvme_ctrlr_cmd_delete_io_cq(nvme_controller_t *ctrlr, nvme_qpair_t *io_que,
 	tr = nvme_allocate_tracker(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
 
 	if (tr == NULL) {
+		DTRACE_PROBE(no_resources_in_admin_qpair);
 		return EAGAIN;
 	}
 	cmd = &tr->cmd;
@@ -159,6 +164,7 @@ nvme_ctrlr_cmd_delete_io_sq(nvme_controller_t *ctrlr,
 	tr = nvme_allocate_tracker(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
 
 	if (tr == NULL) {
+		DTRACE_PROBE(no_resources_in_admin_qpair);
 		return EAGAIN;
 	}
 	cmd = &tr->cmd;
@@ -179,6 +185,7 @@ nvme_ctrlr_cmd_set_feature(nvme_controller_t *ctrlr, uint8_t feature,
 	tr = nvme_allocate_tracker(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
 
 	if (tr == NULL) {
+		DTRACE_PROBE(no_resources_in_admin_qpair);
 		return EAGAIN;
 	}
 	cmd = &tr->cmd;
@@ -200,6 +207,7 @@ nvme_ctrlr_cmd_get_feature(nvme_controller_t *ctrlr, uint8_t feature,
 	tr = nvme_allocate_tracker(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
 
 	if (tr == NULL) {
+		DTRACE_PROBE(no_resources_in_admin_qpair);
 		return EAGAIN;
 	}
 	cmd = &tr->cmd;
@@ -254,6 +262,7 @@ nvme_ctrlr_cmd_asynchronous_event_request(nvme_controller_t *ctrlr,
 	tr = nvme_allocate_tracker(&ctrlr->adminq, NULL, 0, cb_fn, cb_arg);
 
 	if (tr == NULL) {
+		DTRACE_PROBE(no_resources_in_admin_qpair);
 		return EAGAIN;
 	}
 	cmd = &tr->cmd;

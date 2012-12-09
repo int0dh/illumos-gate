@@ -42,6 +42,7 @@
 #include <sys/pci.h>
 #include <sys/sysmacros.h>
 #include <sys/cpuvar.h>
+#include <sys/sdt.h>
 
 #include "nvme.h"
 #include "nvme_private.h"
@@ -130,7 +131,7 @@ static ddi_dma_attr_t nvme_bd_dma_attr = {
         .dma_attr_maxxfer = 4096,
         .dma_attr_seg = 4095,
         .dma_attr_sgllen = 2,
-        .dma_attr_granular = 4096,
+        .dma_attr_granular = 512,
   	.dma_attr_flags = 0,
 };
 
@@ -142,8 +143,9 @@ nvme_io_completed(void *arg, const nvme_completion_t *status,
 	bd_xfer_t *xfer = tr->xfer;
 	nvme_namespace_t *ns = arg;
 	/* check the status of completed IO. if an error - abort with EIO */
-	if (status->sf_sc || status->sf_sct)
-	{
+	if (status->sf_sc || status->sf_sct) {
+
+		DTRACE_PROBE(io_completed_with_error);
 		nvme_free_tracker(tr);
 		bd_xfer_done(xfer, EIO);
 		return;
@@ -163,6 +165,7 @@ nvme_io_completed(void *arg, const nvme_completion_t *status,
 		/* to avoid extra allocations/deallocations */
 		int blk_size = nvme_ns_get_sector_size(ns);
 		int blks_done = xfer->x_dmac.dmac_size / blk_size;
+
 		/* we are going to issue next IO request, so a) let`s update */
 		/* the block number */
 		*(uint64_t *)&tr->cmd.cdw10 += blks_done;
@@ -170,6 +173,9 @@ nvme_io_completed(void *arg, const nvme_completion_t *status,
 		(void) ddi_dma_nextcookie(xfer->x_dmah, &xfer->x_dmac);
 		/* c) and set new length */
 		tr->cmd.cdw12 = (xfer->x_dmac.dmac_size / blk_size) - 1;
+
+		DTRACE_PROBE2(next_cookie, size_t, xfer->x_dmac.dmac_size,
+				int, xfer->x_ndmac);
 		/* submit updated tracker into the same qpair as it was */
 		/* allocated from */
 		nvme_qpair_submit_request(tr, ASYNC);
@@ -185,6 +191,7 @@ nvme_blk_read(void *arg, bd_xfer_t *xfer)
 	int ret;
 
 	if ((xfer->x_blkno + xfer->x_nblks) > ns->data.nsze) {
+		DTRACE_PROBE(blk_read_overflow);
 		return (EINVAL);
 	}
 	/* issue READ cmd, put it into the NVMe command queue */
@@ -204,6 +211,7 @@ nvme_blk_write(void *arg, bd_xfer_t *xfer)
 	int ret;
 
 	if ((xfer->x_blkno + xfer->x_nblks) > ns->data.nsze) {
+		DTRACE_PROBE(blk_write_overflow);
 		return (EINVAL);
 	}
 	/* issue WRITE command and put it into NVMe command queue */
@@ -289,7 +297,7 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 
 	instance = ddi_get_instance(devinfo);
 
-	printf("revision 1.7\n");
+	printf("revision 1.8\n");
 	printf("PAGESIZE is %d\n", (int)PAGESIZE);
 
 	switch (cmd) {

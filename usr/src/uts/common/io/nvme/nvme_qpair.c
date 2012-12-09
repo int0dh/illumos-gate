@@ -40,6 +40,7 @@
 #include <sys/debug.h>
 #include <sys/pci.h>
 #include <sys/sysmacros.h>
+#include <sys/sdt.h>
 
 #include "nvme.h"
 #include "nvme_private.h"
