@@ -110,6 +110,7 @@ nvme_ns_start_io(nvme_namespace_t *ns, bd_xfer_t *xfer,
 		
 			ret = nvme_qpair_submit_request(tr, ASYNC);
 			if (ret) {
+				nvme_free_tracker(tr);
 				return ret;
 			}
 		}
