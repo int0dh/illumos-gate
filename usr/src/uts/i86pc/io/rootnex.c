@@ -3622,8 +3622,11 @@ rootnex_setup_windows(ddi_dma_impl_t *hp, rootnex_dma_t *dma,
 		 * trim]) plus one for remainder.
 		 */
 		if ((unsigned)attr->dma_attr_sgllen < sinfo->si_sgl_size) {
-			sglwin = (sinfo->si_sgl_size /
-			    (attr->dma_attr_sgllen - 1)) + 1;
+			if (attr->dma_attr_sglen == 1)
+				sglwin = sinfo->si_sgl_size + 1;
+			else
+				sglwin = (sinfo->si_sgl_size /
+				    (attr->dma_attr_sgllen - 1)) + 1;
 		} else {
 			sglwin = 0;
 		}

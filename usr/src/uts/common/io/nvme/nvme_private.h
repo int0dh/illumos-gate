@@ -86,7 +86,7 @@ typedef void (*nvme_cb_fn_t)(void *, const nvme_completion_t *, nvme_tracker_t *
 struct nvme_tracker {
 
 	TAILQ_ENTRY(nvme_tracker)	next;
-	int				ndmac_completed;
+	boolean_t			is_last;
 	struct nvme_command		cmd;
 	struct nvme_qpair		*qpair;
 	kcondvar_t			cv;
@@ -98,14 +98,15 @@ struct nvme_tracker {
 	size_t				payload_size;
 	timeout_id_t			timeout;
 	uint16_t			cid;
+	int				ndmac_completed;
 };
 
 struct nvme_qpair {
 
 	nvme_controller_t	*ctrlr;
 
-	ddi_acc_handle_t	cmd_dma_acc_handle;
-	ddi_acc_handle_t	cpl_dma_acc_handle;
+	ddi_acc_handle_t	mem_acc_handle;
+
 	ddi_softint_handle_t	*soft_intr_handle;
 	ddi_intr_handle_t	*hw_intr_handle;	
 
@@ -132,7 +133,7 @@ struct nvme_qpair {
 	struct nvme_command	*cmd;
 	struct nvme_completion	*cpl;
 
-	ddi_dma_handle_t	dma_tag;
+	ddi_dma_handle_t	dmah;
 
 	uint64_t		cmd_bus_addr;
 
@@ -163,6 +164,7 @@ struct nvme_controller {
 	dev_info_t		*devinfo;
 	ddi_device_acc_attr_t   *devattr;
 	ddi_dma_handle_t        dma_handle;
+	ddi_dma_attr_t		*dma_attr;
 	ddi_acc_handle_t	dma_acc;
 	dev_info_t		*dev;
 	int			nvme_nbloks;

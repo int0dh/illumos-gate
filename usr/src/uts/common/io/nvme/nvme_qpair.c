@@ -141,6 +141,7 @@ nvme_qpair_construct(nvme_qpair_t *qpair, uint32_t id,
 	ddi_dma_cookie_t  cookie;
 	uint_t  cookie_count;
 	int res;
+	const int qpair_mem_size = (sizeof(nvme_command_t) + sizeof(nvme_completion_t)) * num_entries;
 
 	qpair->id = id;
 	qpair->vector = vector;
@@ -172,33 +173,30 @@ nvme_qpair_construct(nvme_qpair_t *qpair, uint32_t id,
 	qpair->num_intr_handler_calls = 0;
 	qpair->sq_head = qpair->sq_tail = qpair->cq_head = 0;
 
-	res = ddi_dma_mem_alloc(qpair->ctrlr->dma_handle, 
-			qpair->num_entries * sizeof(nvme_command_t), 
-			qpair->ctrlr->devattr, IOMEM_DATA_UNCACHED,
-			DDI_DMA_SLEEP, NULL, (char **)&qpair->cmd, &len, 
-			&qpair->cmd_dma_acc_handle);
+	/* allocate per-qpair DMA handle */
+	res = ddi_dma_alloc_handle(ctrlr->devinfo, ctrlr->dma_attr,
+		DDI_DMA_SLEEP, NULL, &qpair->dmah);
 
 	if (res != DDI_SUCCESS) {
+		dev_err(ctrlr->devinfo, CE_WARN, "Cannot allocate per-qpair DMA handle");
+		return (ENOMEM);
+	}
+	res = ddi_dma_mem_alloc(qpair->dmah, qpair_mem_size, 
+			qpair->ctrlr->devattr, IOMEM_DATA_UNCACHED,
+			DDI_DMA_SLEEP, NULL, (char **)&qpair->cmd, &len, 
+			&qpair->mem_acc_handle);
+
+	if (res != DDI_SUCCESS) {
+		dev_err(ctrlr->devinfo, CE_WARN, "cannot allocate DMA memory for qpair, qpair_mem_size 0x%x", qpair_mem_size);
+		ddi_dma_free_handle(&qpair->dmah);
 		return (ENOMEM);
 	}
 	/* is the dma_mem_alloc()ed memory zeroed? */
-	memset(qpair->cmd, 0, qpair->num_entries * sizeof(struct nvme_command));
+	memset(qpair->cmd, 0, qpair_mem_size);
 
-	res = ddi_dma_mem_alloc(qpair->ctrlr->dma_handle, 
-			qpair->num_entries * sizeof(nvme_completion_t), 
-			qpair->ctrlr->devattr, IOMEM_DATA_UNCACHED,
-			DDI_DMA_SLEEP, NULL, (char **)&qpair->cpl, &len, 
-			&qpair->cpl_dma_acc_handle);
-
-	if (res != DDI_SUCCESS) {
-		(void)ddi_dma_mem_free(&qpair->cmd_dma_acc_handle);
-		return (ENOMEM);
-	}
-	/* is the memory zeroed per default ? */
-	memset(qpair->cpl, 0, qpair->num_entries * sizeof(nvme_completion_t));
-	res = ddi_dma_addr_bind_handle(qpair->ctrlr->dma_handle, 
+	res = ddi_dma_addr_bind_handle(qpair->dmah, 
 			(struct as *)NULL, (caddr_t)qpair->cmd, 
-			qpair->num_entries * sizeof(nvme_command_t),
+			qpair_mem_size,
 			DDI_DMA_RDWR | DDI_DMA_CONSISTENT, DDI_DMA_DONTWAIT,
 			0, &cookie, &cookie_count);
  
@@ -208,32 +206,18 @@ nvme_qpair_construct(nvme_qpair_t *qpair, uint32_t id,
 			break;
 		/* TODO: update to count some statistic based on the bind_handle() result */
 		default:
-			(void)ddi_dma_mem_free(&qpair->cmd_dma_acc_handle);
-			(void)ddi_dma_mem_free(&qpair->cpl_dma_acc_handle);
+			dev_err(ctrlr->devinfo, CE_WARN, "Cannot bind DMA handle");
+			(void) ddi_dma_mem_free(&qpair->mem_acc_handle);
+			(void) ddi_dma_free_handle(&qpair->dmah);
 			return (ENOMEM);
 	}
 	ASSERT(cookie_count == 1);
 
 	qpair->cmd_bus_addr = cookie.dmac_laddress;
 
-	res = ddi_dma_addr_bind_handle(qpair->ctrlr->dma_handle, 
-			(struct as *)NULL, (caddr_t)qpair->cpl, 
-			qpair->num_entries * sizeof(nvme_completion_t),
-			DDI_DMA_RDWR | DDI_DMA_CONSISTENT, DDI_DMA_DONTWAIT,
-			0, &cookie, &cookie_count);
+	qpair->cpl_bus_addr = qpair->cmd_bus_addr + (qpair->num_entries * sizeof(nvme_command_t));
 
-	switch (res) {
-		case DDI_DMA_MAPPED:
-		/* everything is ok */
-			break;
-		default:
-			(void)ddi_dma_mem_free(&qpair->cmd_dma_acc_handle);
-			(void)ddi_dma_mem_free(&qpair->cpl_dma_acc_handle);
-			return ENOMEM;
-	}
-	ASSERT(cookie_count == 1);
-
-	qpair->cpl_bus_addr = cookie.dmac_laddress;
+	qpair->cpl = (nvme_completion_t *)((char *)qpair->cmd + (qpair->num_entries * sizeof(nvme_command_t)));
 
 	qpair->sq_tdbl_off = nvme_mmio_offsetof(doorbell[id].sq_tdbl);
 	qpair->cq_hdbl_off = nvme_mmio_offsetof(doorbell[id].cq_hdbl);
@@ -287,63 +271,34 @@ nvme_qpair_destroy(nvme_qpair_t *qpair)
 	mutex_destroy(&qpair->hw_mutex);
 	mutex_destroy(&qpair->free_trackers_mutex);
 
-	(void) ddi_dma_mem_free(&qpair->cmd_dma_acc_handle);
-	(void) ddi_dma_mem_free(&qpair->cpl_dma_acc_handle);
+	(void) ddi_dma_unbind_handle(qpair->dmah);
+	(void) ddi_dma_mem_free(&qpair->mem_acc_handle);
+	(void) ddi_dma_free_handle(&qpair->dmah);
 }
 
 void
 nvme_admin_qpair_destroy(nvme_qpair_t *qpair)
 {
-	/*
-	 * For NVMe, you don't send delete queue commands for the admin
-	 *  queue, so we just need to unload and free the cmd and cpl memory.
-	 */
-	(void) ddi_dma_mem_free(&qpair->cmd_dma_acc_handle);
-	(void) ddi_dma_mem_free(&qpair->cpl_dma_acc_handle);
-
-	(void) ddi_dma_unbind_handle(qpair->ctrlr->dma_handle);
-
 	nvme_qpair_destroy(qpair);
-}
-
-static void
-nvme_free_cmd_ring(void *arg, const nvme_completion_t *status, nvme_tracker_t *tr)
-{
-	nvme_qpair_t *qpair = (struct nvme_qpair *)arg;
-
-	(void) ddi_dma_mem_free(&qpair->cmd_dma_acc_handle);
-	qpair->cmd = NULL;
-}
-
-static void
-nvme_free_cpl_ring(void *arg, const nvme_completion_t *status, nvme_tracker_t *tr)
-{
-	nvme_qpair_t *qpair = (struct nvme_qpair *)arg;
-
-	(void) ddi_dma_mem_free(&qpair->cpl_dma_acc_handle);
-	qpair->cpl = NULL;
 }
 
 void
 nvme_io_qpair_destroy(nvme_qpair_t *qpair)
 {
 	nvme_controller_t *ctrlr = qpair->ctrlr;
+	nvme_completion_t cpl;
 
 	if (qpair->num_entries > 0) {
 
-		nvme_ctrlr_cmd_delete_io_sq(ctrlr, qpair, nvme_free_cmd_ring,
-		    qpair);
-		/* Spin until free_cmd_ring sets qpair->cmd to NULL. */
-		while (qpair->cmd) {
-			DELAY(5);
-		}
-		nvme_ctrlr_cmd_delete_io_cq(ctrlr, qpair, nvme_free_cpl_ring,
-		    qpair);
-		/* Spin until free_cpl_ring sets qpair->cmd to NULL. */
-		while (qpair->cpl) {
-			DELAY(5);
-		}
+		nvme_ctrlr_cmd_delete_io_sq(ctrlr, qpair, nvme_admin_cb,
+		    &cpl);
+
+		nvme_ctrlr_cmd_delete_io_cq(ctrlr, qpair, nvme_admin_cb,
+		    &cpl);
+
 		nvme_qpair_destroy(qpair);
+
+		qpair->num_entries = 0;
 	}
 }
 
@@ -388,7 +343,9 @@ nvme_qpair_submit_request(nvme_tracker_t *tr, int sync)
 	clock_t deadline;
 	int ret = 0;
 	
-	if (sync == SYNC) {
+	switch (sync) {
+
+	case SYNC:
 		/* to avoid races with admin callback */
 		mutex_enter(&tr->mutex);
 
@@ -402,8 +359,9 @@ nvme_qpair_submit_request(nvme_tracker_t *tr, int sync)
 		}
 		mutex_exit(&tr->mutex);
 		nvme_free_tracker(tr);
+		break;
 
-	} else {
+	default:
 		nvme_map_tracker(tr);
 		nvme_qpair_submit_cmd(tr);
 	}

@@ -126,10 +126,10 @@ static ddi_dma_attr_t nvme_bd_dma_attr = {
         .dma_attr_addr_hi = 0xFFFFFFFFFFFFFFFFull,
         .dma_attr_count_max = 0xFFFFFFFFFFFFFFFFull,
         .dma_attr_align = 1,
-        .dma_attr_burstsizes = 512,
+        .dma_attr_burstsizes = (-1 << 9),
         .dma_attr_minxfer = 512,
-        .dma_attr_maxxfer = 4096,
-        .dma_attr_seg = 4095,
+        .dma_attr_maxxfer = (64 * 1024),
+        .dma_attr_seg = 0xFFFFFFFFFFFFFFFFull,
         .dma_attr_sgllen = 2,
         .dma_attr_granular = 512,
   	.dma_attr_flags = 0,
@@ -297,7 +297,7 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 
 	instance = ddi_get_instance(devinfo);
 
-	printf("revision 1.8\n");
+	printf("revision 1.11\n");
 	printf("PAGESIZE is %d\n", (int)PAGESIZE);
 
 	switch (cmd) {
@@ -353,7 +353,7 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	nvme->dma_acc	= dmaac;
 	nvme->devinfo = devinfo;
 	nvme->devattr = &nvme_dev_attr;
-
+	nvme->dma_attr = &nvme_req_dma_attr; 
 	ret = nvme_ctrlr_construct(nvme);
 	if (ret != 0) {
 		dev_err(devinfo, CE_WARN, "cannot construct controller!");

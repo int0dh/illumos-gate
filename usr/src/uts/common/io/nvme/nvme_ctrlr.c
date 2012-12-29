@@ -221,8 +221,11 @@ nvme_ctrlr_enable(nvme_controller_t *ctrlr)
 	cc.bits.iocqes = 4; /* CQ entry size == 16 == 2^4 */
 
 	/* This evaluates to 0, which is according to spec. */
-	cc.bits.mps = (PAGESIZE >> 13);
-
+	/* hack: controller supports various page sizes, we set 8k here
+	* to transfer up to 8k per IO transaction and do not deal with PRPL */
+	cc.bits.mps = ((64 * 1024) >> 12)  - 1;
+ 
+	printf("MPS is %d CC is 0x%08x\n", cc.bits.mps, cc.raw);
 	nvme_mmio_write_4(ctrlr, cc, cc.raw);
 	DELAY(5000);
 	return (nvme_ctrlr_wait_for_ready(ctrlr));
