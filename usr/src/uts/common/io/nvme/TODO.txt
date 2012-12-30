@@ -1,3 +1,0 @@
-1) How to convert any virtual address into the physical one ?
-2) Think on how to notify about command completion
-3)  Work on the interrupts
