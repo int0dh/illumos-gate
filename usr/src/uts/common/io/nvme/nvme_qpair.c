@@ -60,7 +60,8 @@ nvme_wait_for_completion(nvme_tracker_t *tr)
 		cpl = &qpair->cpl[qpair->cq_head];
 
 		offset = (off_t)cpl - (off_t)qpair->cmd;
-		(void) ddi_dma_sync(qpair->ctrlr->dma_handle, offset,
+
+		(void) ddi_dma_sync(qpair->dmah, offset,
 			sizeof(struct nvme_completion), DDI_DMA_SYNC_FORKERNEL); 
 		if (cpl->p != qpair->phase) {
 			DELAY(10);
@@ -99,7 +100,8 @@ nvme_qpair_process_completions(nvme_qpair_t *qpair)
 		cpl = &qpair->cpl[qpair->cq_head];
 
 		offset = (off_t)cpl - (off_t)qpair->cmd;
-		(void) ddi_dma_sync(qpair->ctrlr->dma_handle, offset,
+
+		(void) ddi_dma_sync(qpair->dmah, offset,
 			sizeof(struct nvme_completion), DDI_DMA_SYNC_FORKERNEL); 
 		if (cpl->p != qpair->phase) {
 			break;
@@ -321,7 +323,8 @@ nvme_qpair_submit_cmd(nvme_tracker_t *tr)
 	memcpy(cmd, &tr->cmd, sizeof(tr->cmd));
 
 	offset = (off_t)cmd - (off_t)qpair->cmd;
-	(void) ddi_dma_sync(qpair->ctrlr->dma_handle, offset,
+
+	(void) ddi_dma_sync(qpair->dmah, offset,
 			sizeof(struct nvme_command), DDI_DMA_SYNC_FORDEV); 
 
 	if (++qpair->sq_tail == qpair->num_entries)
