@@ -54,15 +54,20 @@ nvme_ns_start_io(nvme_namespace_t *ns, bd_xfer_t *xfer,
 	nvme_qpair_t *q;
 	int ret;
 	int blk_size = nvme_ns_get_sector_size(ns);
+	int qindex;
 
 	/* when MSI/MSI-X is enabled, we use one IO qpair per CPU */
 	if (ns->ctrlr->msix_enabled == B_TRUE)
 	{
-		ASSERT(ns->ctrlr->num_io_queues > CPU->cpu_id);
-		q = &ns->ctrlr->ioq[CPU->cpu_id];
+		if (CPU->cpu_id > (ns->ctrlr->num_io_queues - 1))
+			qindex = CPU->cpu_id % ns->ctrlr->num_io_queues;
+		else
+			qindex = CPU->cpu_id;
 	}
 	else
-		q = &ns->ctrlr->ioq[0];
+		qindex = 0;
+
+	q = &ns->ctrlr->ioq[qindex];
 
 	tr = nvme_allocate_tracker(q, NULL, xfer->x_nblks * blk_size, cb_fn, cb_arg);
 

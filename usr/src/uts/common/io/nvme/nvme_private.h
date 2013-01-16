@@ -167,9 +167,10 @@ struct nvme_controller {
 	ddi_dma_attr_t		*dma_attr;
 	ddi_acc_handle_t	dma_acc;
 	dev_info_t		*dev;
-	int			nvme_nbloks;
 	ddi_intr_handle_t	*intr_handle;
 	ddi_softint_handle_t    *soft_intr_handle;
+	int			intr_array_size;
+	/* TODO: rename field below to something nice */
 	int			intr_size;
 
 	/* physical address of nvme_controller structure */
@@ -178,7 +179,11 @@ struct nvme_controller {
 
 	uint32_t		ready_timeout_in_ms;
 	ddi_acc_handle_t        nvme_regs_handle;
+	/* chatam has additional BAR with control registers */
+	ddi_acc_handle_t	chatam_regs_handle; /* required for Chatam */
+
 	uint8_t			*nvme_regs_base;
+	uint8_t			*chatam_regs_base;
 
 	uint32_t		msix_enabled;
 	uint32_t		force_intx;
@@ -212,6 +217,8 @@ struct nvme_controller {
 	nvme_namespace_t		ns[NVME_MAX_NAMESPACES];
 
 	boolean_t			is_started;
+	boolean_t			is_chatam;
+	unsigned int			chatam_lbas;
 };
 
 #define nvme_mmio_offsetof(reg)						       \
@@ -229,6 +236,17 @@ struct nvme_controller {
 		ddi_put32((sc)->nvme_regs_handle, (uint32_t *)((sc)->nvme_regs_base + nvme_mmio_offsetof(reg) + 4), ((val) & 0xFFFFFFFF00000000UL) >> 32); \
 	} while (0)
 
+#define chatam_mmio_read_4(sc, reg)	\
+	ddi_get32((sc)->chatam_regs_handle, (uint32_t *)((sc)->chatam_regs_base + reg))
+
+#define chatam_mmio_write_4(sc, reg, val)	\
+	ddi_put32((sc)->chatam_regs_handle, (uint32_t *)((sc)->chatam_regs_base + reg), val)
+
+#define chatam_mmio_write_8(sc,reg,val) \
+	do { \
+		ddi_put32((sc)->chatam_regs_handle, (uint32_t *)((sc)->chatam_regs_base + reg), (val) & 0xFFFFFFFF); \
+		ddi_put32((sc)->chatam_regs_handle, (uint32_t *)((sc)->chatam_regs_base + reg + 4), ((val) & 0xFFFFFFFF00000000ULL) >> 32); \
+	} while (0)
 
 enum nvme_namespace_flags {
 	NVME_NS_DEALLOCATE_SUPPORTED	= 0x1,

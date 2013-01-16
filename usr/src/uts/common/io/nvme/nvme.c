@@ -294,10 +294,12 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	ddi_dma_handle_t dmah;
 	ddi_dma_cookie_t cookie[2];
 	u_int cookie_count;
-
+	ddi_acc_handle_t pcihandle;
+	int bar;
+ 
 	instance = ddi_get_instance(devinfo);
 
-	printf("revision 1.11\n");
+	printf("revision 1.12\n");
 	printf("PAGESIZE is %d\n", (int)PAGESIZE);
 
 	switch (cmd) {
@@ -341,12 +343,35 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	nvme->ns_data_phys = cookie[0].dmac_address +
 			 offsetof(nvme_controller_t, ns[0]);
 
-	if (ddi_regs_map_setup(devinfo, 1, (caddr_t *)&nvme->nvme_regs_base,
+	if (pci_config_setup(devinfo, &pcihandle) != DDI_SUCCESS) {
+		dev_err(devinfo, CE_WARN, "cannot setup pci config space");
+		goto dma_handle_free;
+	}
+	nvme->is_chatam = (pci_config_get16(pcihandle, PCI_CONF_DEVID) == 0x2011 ? B_TRUE : B_FALSE);
+
+	if (nvme->is_chatam) {
+		printf("chatam board detected!\n");
+		bar = 2;
+	}
+	else {
+		bar = 1;
+	}
+	pci_config_teardown(&pcihandle);
+
+	if (ddi_regs_map_setup(devinfo, bar, (caddr_t *)&nvme->nvme_regs_base,
+	
 		0, 0, &nvme_dev_attr, &nvme->nvme_regs_handle) != DDI_SUCCESS) {
 
 			dev_err(devinfo, CE_WARN, "cannot map registers");
 			goto dma_mem_free;
 	}
+	/* TODO: check for errors or even remove chatam-specific code in future */
+	if (nvme->is_chatam) {
+		/* BAR0 is for chatam-specific regs */
+		(void) ddi_regs_map_setup(devinfo, 0, (caddr_t *)&nvme->chatam_regs_base, 0, 0, &nvme_dev_attr, &nvme->chatam_regs_handle);
+		dev_err(devinfo, CE_WARN, "chatam control BAR mapped ok");
+	}
+
 	ddi_set_driver_private(devinfo, nvme);	
 
 	nvme->dma_handle = dmah;
@@ -354,6 +379,7 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	nvme->devinfo = devinfo;
 	nvme->devattr = &nvme_dev_attr;
 	nvme->dma_attr = &nvme_req_dma_attr; 
+
 	ret = nvme_ctrlr_construct(nvme);
 	if (ret != 0) {
 		dev_err(devinfo, CE_WARN, "cannot construct controller!");
@@ -397,6 +423,9 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	return (DDI_SUCCESS);
 regs_map_free:
 	(void) ddi_regs_map_free(&nvme->nvme_regs_handle);
+	if (nvme->is_chatam) {
+		(void) ddi_regs_map_free(&nvme->chatam_regs_handle);
+	}
 dma_mem_free:
 	(void) ddi_dma_mem_free(&dmaac);
 dma_handle_free:

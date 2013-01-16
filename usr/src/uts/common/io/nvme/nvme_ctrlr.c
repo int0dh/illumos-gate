@@ -223,7 +223,7 @@ nvme_ctrlr_enable(nvme_controller_t *ctrlr)
 	/* This evaluates to 0, which is according to spec. */
 	/* hack: controller supports various page sizes, we set 8k here
 	* to transfer up to 8k per IO transaction and do not deal with PRPL */
-	cc.bits.mps = ((64 * 1024) >> 12)  - 1;
+	cc.bits.mps = (PAGESIZE >> 13);
  
 	printf("MPS is %d CC is 0x%08x\n", cc.bits.mps, cc.raw);
 	nvme_mmio_write_4(ctrlr, cc, cc.raw);
@@ -330,7 +330,12 @@ nvme_ctrlr_construct_namespaces(nvme_controller_t *ctrlr)
 {
 	nvme_namespace_t	*ns;
 	int			i, status;
+	/* chatam likes to put garbage into cdata.nn. fix it */
+	if (ctrlr->is_chatam) {
+		ctrlr->cdata.nn = 1;
+	}
 	/* one NVMe may have a few namespaces. Identify each */
+	printf("number of namespaces is %d\n", ctrlr->cdata.nn);
 	for (i = 0; i < ctrlr->cdata.nn; i++) {
 		ns = &ctrlr->ns[i];
 
@@ -351,18 +356,22 @@ nvme_ctrlr_start(void *ctrlr_arg)
 	nvme_interrupt_enable(ctrlr);
 
 	if (nvme_ctrlr_identify(ctrlr) != 0) {
+		printf("cannot identify controller\n");
 		nvme_interrupt_disable(ctrlr);
 		return (ENXIO);
 	}
 	if (nvme_ctrlr_set_num_qpairs(ctrlr) != 0) {
+		printf("cannot set num qpairs\n");
 		nvme_interrupt_disable(ctrlr);
 		return (ENXIO);
 	}
-	if (nvme_ctrlr_create_qpairs(ctrlr) != 0) {
+	if (nvme_ctrlr_create_qpairs(ctrlr) != 0) { 
+		printf("cannot create qpairs\n");
 		nvme_interrupt_disable(ctrlr);
 		return (ENXIO);
 	}
 	if (nvme_ctrlr_construct_namespaces(ctrlr) != 0) {
+		printf("cannot construct namespaces!\n");
 		nvme_interrupt_disable(ctrlr);
 		return (ENXIO);
 	}
@@ -413,16 +422,22 @@ nvme_ctrlr_intr_handler(char *arg, char *unused)
 void
 nvme_interrupt_enable(nvme_controller_t *nvme)
 {
+	int i;
 	if (nvme->intr_handle) {
-		ddi_intr_enable(nvme->intr_handle[0]);
+		for (i = 0; i < nvme->intr_size; i ++) {
+			ddi_intr_enable(nvme->intr_handle[i]);
+		}
 	}
 }
 
 void
 nvme_interrupt_disable(nvme_controller_t *nvme)
 {
+	int i;
 	if (nvme->intr_handle) {
-		ddi_intr_disable(nvme->intr_handle[0]);
+		for (i = 0; i < nvme->intr_size; i ++) {
+			ddi_intr_disable(nvme->intr_handle[i]);
+		}
 	}
 }
 
@@ -458,6 +473,8 @@ nvme_qpair_register_interrupt(nvme_qpair_t *q)
 	else
 		softintr_handler = nvme_ctrlr_softintr_msi_handler;
 
+
+	printf("%s: q->id %d\n", __func__, q->id);
 
 	if (ddi_intr_add_softint(nvme->devinfo,
 			&nvme->soft_intr_handle[q->id],
@@ -496,19 +513,22 @@ nvme_allocate_interrupts(nvme_controller_t *nvme)
 	if (intr_type & DDI_INTR_TYPE_MSIX) {
 
 		printf("MSIX interrupts are supported!!\n");
-		intr_type &= ~DDI_INTR_TYPE_FIXED;
+		intr_type &= ~(DDI_INTR_TYPE_FIXED | DDI_INTR_TYPE_MSI);
 
 		if (ddi_intr_get_nintrs(nvme->devinfo,
 					intr_type, &count) != DDI_SUCCESS) {
+			printf("cannot get nintrs!\n");
 			return (EINVAL);
 		}
 		nvme->msix_enabled = B_TRUE;
-		nvme->num_io_queues = min(ncpus, count);
-		/* + one ADMIN queue */
-		count = nvme->num_io_queues + 1;
-
+		nvme->num_io_queues = min(ncpus, count - 1);
+		/* stupid chatam limitation */
+		if (nvme->is_chatam) {
+			nvme->num_io_queues = min(nvme->num_io_queues, 7);
+		}
 		dev_err(nvme->devinfo, CE_WARN,
-			 "%d IO queues to be allocated\n", count);
+			 "%d IO queues to be allocated\n", nvme->num_io_queues);
+		printf("count %d\n", count);
 	} else {
 		printf("MSI interrupts are not supported ._.\n");
 		nvme->num_io_queues = 1;
@@ -521,11 +541,13 @@ nvme_allocate_interrupts(nvme_controller_t *nvme)
 				 intr_type, 0, count, &actual,
 				 DDI_INTR_ALLOC_NORMAL) != DDI_SUCCESS)
 	{
+		printf("cannot allocate space for interrupt handles!\n");
 		kmem_free(nvme->intr_handle, count * sizeof(ddi_intr_handle_t));
 		kmem_free(nvme->soft_intr_handle, count * sizeof(ddi_softint_handle_t));
 		return (ENOMEM);
 	}
 	printf("actual interrupts %d\n", actual);
+	nvme->intr_array_size = count;
 	nvme->intr_size = actual;
 	return 0;
 }
@@ -539,11 +561,60 @@ int nvme_release_interrupts(struct nvme_controller *nvme)
 		(void) ddi_intr_free(nvme->intr_handle[i]);
 		(void) ddi_intr_remove_softint(nvme->soft_intr_handle[i]);
 	}
-	kmem_free(nvme->intr_handle, nvme->intr_size * sizeof(ddi_intr_handle_t));
-	kmem_free(nvme->soft_intr_handle, nvme->intr_size * sizeof(ddi_softint_handle_t));
+	kmem_free(nvme->intr_handle, nvme->intr_array_size * sizeof(ddi_intr_handle_t));
+	kmem_free(nvme->soft_intr_handle, nvme->intr_array_size * sizeof(ddi_softint_handle_t));
 	return (0);
 }
 
+void
+nvme_chatam_initialize(nvme_controller_t *nvme)
+{
+	unsigned long long chatam_size;
+
+	uint64_t reg1, reg2, reg3, temp1, temp2;
+	uint32_t temp3;
+
+	printf("initializing chatam,,\n");
+	DELAY(1000);
+
+	temp3 = chatam_mmio_read_4(nvme, 0x8080);
+	printf("chatam version 0x%x\n", temp3);
+
+	nvme->chatam_lbas = chatam_mmio_read_4(nvme, 0x8068) - 0x110;
+
+	printf("chatam size is %lld\n", (long long)(nvme->chatam_lbas * 512));
+	
+	reg1 = reg2 = reg3 = (uint64_t)(nvme->chatam_lbas * 512);
+
+	printf("using DDR timings\n");
+
+	chatam_mmio_write_8(nvme, 0x8000, reg1);
+	chatam_mmio_write_8(nvme, 0x8008, reg2);
+	chatam_mmio_write_8(nvme, 0x8010, reg3);
+
+	temp1 = temp2 = 0ULL;
+
+	chatam_mmio_write_8(nvme, 0x8020, temp1);
+	temp3 = chatam_mmio_read_4(nvme, 0x8020);
+
+	chatam_mmio_write_8(nvme, 0x8028, temp2);
+	temp3 = chatam_mmio_read_4(nvme, 0x8028);
+
+	chatam_mmio_write_8(nvme, 0x8030, temp1);
+	chatam_mmio_write_8(nvme, 0x8038, temp2);
+	
+	chatam_mmio_write_8(nvme, 0x8040, temp1);
+	chatam_mmio_write_8(nvme, 0x8048, temp2);
+
+	chatam_mmio_write_8(nvme, 0x8050, temp1);
+	chatam_mmio_write_8(nvme, 0x8058, temp2);
+
+	DELAY(10000);
+
+	printf("chatam initialized!\n");
+	return;
+}
+	
 int
 nvme_ctrlr_construct(nvme_controller_t *nvme)
 {
@@ -551,7 +622,13 @@ nvme_ctrlr_construct(nvme_controller_t *nvme)
 	union cap_hi_register	cap_hi;
 	int status = 0, count;
 	
-	(void) nvme_allocate_interrupts(nvme);
+	if (nvme->is_chatam) {
+		nvme_chatam_initialize(nvme);
+	}
+	if (nvme_allocate_interrupts(nvme) != 0) {
+		printf("cannot construct controller!\n");
+		return (EINVAL);
+	}
 	/*
 	 * Software emulators may set the doorbell stride to something
 	 *  other than zero, but this driver is not set up to handle that.

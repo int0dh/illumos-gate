@@ -92,6 +92,7 @@ nvme_ns_construct(nvme_namespace_t *ns, uint16_t id, nvme_controller_t *ctrlr)
 	nvme_completion_t	cpl;
 	int			status;
 	int ns_data_offset;
+	uint64_t chatam_capacity;
 
 	ns->ctrlr = ctrlr;
 	ns->id = id;
@@ -104,6 +105,17 @@ nvme_ns_construct(nvme_namespace_t *ns, uint16_t id, nvme_controller_t *ctrlr)
 	if (cpl.sf_sc || cpl.sf_sct) {
 		return (ENXIO);
 	}
+	/* we have to fix some things on chatam because it returns garbage on IDENTIFY */
+	if (ctrlr->is_chatam) {
+		/* limit the capacity to 1G for testing purposes */
+		chatam_capacity = (1024 * 1024 * 1024) / 512;
+		/* sector size - 512 bytes */	
+		ns->data.lbaf[0].lbads = 9;
+		ns->data.nsze = chatam_capacity;
+		ns->data.ncap = chatam_capacity;
+		ns->data.nuse = chatam_capacity;
+		ctrlr->cdata.oncs.dsm = 0;
+	}	
 	if (ctrlr->cdata.oncs.dsm && ns->data.nsfeat.thin_prov) {
 		ns->flags |= NVME_NS_DEALLOCATE_SUPPORTED;
 	}

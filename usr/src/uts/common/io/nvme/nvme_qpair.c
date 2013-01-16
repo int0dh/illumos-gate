@@ -358,6 +358,7 @@ nvme_qpair_submit_request(nvme_tracker_t *tr, int sync)
 		deadline = ddi_get_lbolt() + (clock_t)drv_usectohz(3 * 1000000);
 		/* mutex is already held, it is save to cv_timedwait */
 		if (cv_timedwait(&tr->cv, &tr->mutex, deadline) < 0) {
+			printf("no response from controller within 3 seconds!\n");
 			ret = ETIMEDOUT;
 		}
 		mutex_exit(&tr->mutex);
