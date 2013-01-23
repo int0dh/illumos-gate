@@ -128,9 +128,9 @@ static ddi_dma_attr_t nvme_bd_dma_attr = {
         .dma_attr_align = 1,
         .dma_attr_burstsizes = (-1 << 9),
         .dma_attr_minxfer = 512,
-        .dma_attr_maxxfer = (64 * 1024),
+        .dma_attr_maxxfer = (32 * 1024),
         .dma_attr_seg = 0xFFFFFFFFFFFFFFFFull,
-        .dma_attr_sgllen = 2,
+        .dma_attr_sgllen = 8,
         .dma_attr_granular = 512,
   	.dma_attr_flags = 0,
 };
@@ -145,11 +145,15 @@ nvme_io_completed(void *arg, const nvme_completion_t *status,
 	/* check the status of completed IO. if an error - abort with EIO */
 	if (status->sf_sc || status->sf_sct) {
 
+		printf("IO done with error :(\n");
 		DTRACE_PROBE(io_completed_with_error);
 		nvme_free_tracker(tr);
 		bd_xfer_done(xfer, EIO);
 		return;
 	}
+	bd_xfer_done(xfer, 0);
+	nvme_free_tracker(tr);
+#if 0
 	/* increase the number of completed DMA transactions */
 	/* if we done all the xfer DMA cookies - return xfer to blkdev */
 	tr->ndmac_completed ++;
@@ -180,6 +184,7 @@ nvme_io_completed(void *arg, const nvme_completion_t *status,
 		/* allocated from */
 		nvme_qpair_submit_request(tr, ASYNC);
 	}
+#endif
 }
 /* 
  * blkdev READ callback, called when blkdev wants to read some data from device
@@ -245,7 +250,7 @@ nvme_blk_driveinfo(void *arg, bd_drive_t *drive)
 	/* to deal with PRP list. The SGL looks more interesting (few */
 	/* DMA objects of one blkdev xfer may be easily set up in one */
 	/* request), but SGL is not supported by Qemu NVMe implementation */
-	drive->d_maxxfer = min(PAGESIZE, ns->ctrlr->max_xfer_size); 
+	drive->d_maxxfer = ns->ctrlr->max_xfer_size; 
 	/* let`s assume that a few namespaces share one IO qpair */
 	/* that is true in the worst case */
 	drive->d_qsize = NVME_IO_ENTRIES / ns->ctrlr->cdata.nn;
@@ -299,7 +304,7 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
  
 	instance = ddi_get_instance(devinfo);
 
-	printf("revision 1.12\n");
+	printf("revision 1.14\n");
 	printf("PAGESIZE is %d\n", (int)PAGESIZE);
 
 	switch (cmd) {
@@ -368,7 +373,7 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	/* TODO: check for errors or even remove chatam-specific code in future */
 	if (nvme->is_chatam) {
 		/* BAR0 is for chatam-specific regs */
-		(void) ddi_regs_map_setup(devinfo, 0, (caddr_t *)&nvme->chatam_regs_base, 0, 0, &nvme_dev_attr, &nvme->chatam_regs_handle);
+		(void) ddi_regs_map_setup(devinfo, 1, (caddr_t *)&nvme->chatam_regs_base, 0, 0, &nvme_dev_attr, &nvme->chatam_regs_handle);
 		dev_err(devinfo, CE_WARN, "chatam control BAR mapped ok");
 	}
 
@@ -422,6 +427,8 @@ nvme_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	}
 	return (DDI_SUCCESS);
 regs_map_free:
+	(void) nvme_release_interrupts(nvme);
+
 	(void) ddi_regs_map_free(&nvme->nvme_regs_handle);
 	if (nvme->is_chatam) {
 		(void) ddi_regs_map_free(&nvme->chatam_regs_handle);
@@ -500,9 +507,9 @@ int _info(struct modinfo *modinfop)
 void
 nvme_map_tracker(nvme_tracker_t *tr)
 {
-	ddi_dma_cookie_t *dmac;
+	sgl_entry_t *sgl;
 	uint64_t prp1, prp2;
-	int res;
+	int res, i;
 
 
 	/* FLUSH flushes whole namespace, so no PRP setup is required */
@@ -514,9 +521,55 @@ nvme_map_tracker(nvme_tracker_t *tr)
 	/* Note: flush comes with xfer without xfer->x_nblks set */
 	if (tr->xfer) {
 		if (tr->xfer->x_ndmac) {
-			dmac = &tr->xfer->x_dmac;
-			prp1 = dmac->dmac_laddress;
-			prp2 = (dmac->dmac_laddress + dmac->dmac_size) & ~(PAGESIZE - 1);
+			ddi_dma_cookie_t *d, dmac;
+			nvme_qpair_t *qpair = tr->qpair;
+			int ndmac = tr->xfer->x_ndmac, i;
+			off_t offset;
+			sgl_entry_t *seg_desc;
+
+			d = &tr->xfer->x_dmac;
+		
+//			printf("%s: setup SGL, number of cookies is %d\n", __func__, ndmac);
+
+			sgl = tr->sgl;
+			
+			sgl->addr = d->dmac_laddress;
+			sgl->len = d->dmac_size;
+			sgl->type = 0;
+
+//			printf("setup cookie 0, sgl at 0x%p addr 0x%llx len %d\n", sgl, (long long int)sgl->addr, sgl->len);
+			
+			ndmac --;
+			sgl ++;
+
+			for (i = 0; i < min(ndmac, NVME_SGL_LEN - 1); i ++) {
+
+				ddi_dma_nextcookie(tr->xfer->x_dmah, &dmac);
+
+				sgl->addr = dmac.dmac_laddress;
+				sgl->len = dmac.dmac_size;
+				sgl->type = 0;
+
+//				printf("setup cookie %d, sgl at 0x%p addr 0x%llx len %d\n", i + 1, sgl, (long long int)sgl->addr, sgl->len);
+ 
+				sgl ++;
+			}
+			offset = (off_t)tr->sgl - (off_t)qpair->cmd;
+
+			(void) ddi_dma_sync(qpair->dmah, offset,
+				 sizeof(sgl_entry_t) * NVME_SGL_LEN, DDI_DMA_SYNC_FORDEV);
+
+			seg_desc = (sgl_entry_t *)&tr->cmd.prp1;
+
+			
+			seg_desc->addr = tr->sgl_bus;
+			seg_desc->len = tr->xfer->x_ndmac * sizeof(sgl_entry_t); 
+			seg_desc->type = 3 << 4;
+
+#if 0
+			tr->cmd.prp2 = *(uint64_t *)&seg_desc;
+			tr->cmd.prp1 = *(uint64_t *)(((char *)&seg_desc) + sizeof(uint64_t));	
+#endif
 		} else
 			return;
 	
@@ -524,13 +577,14 @@ nvme_map_tracker(nvme_tracker_t *tr)
 		
 		prp1 = tr->payload;
 		prp2 = (tr->payload + tr->payload_size) & ~(PAGESIZE - 1);
+
+		tr->cmd.prp1 = prp1; 
+		prp1 &= ~(PAGESIZE - 1);
+
+		if (prp2 != prp1) {
+			tr->cmd.prp2 = prp2;
+		}
 	} else
 		return;
 
-	tr->cmd.prp1 = prp1; 
-	prp1 &= ~(PAGESIZE - 1);
-
-	if (prp2 != prp1) {
-		tr->cmd.prp2 = prp2;
-	}
 }

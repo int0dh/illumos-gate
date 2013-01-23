@@ -143,7 +143,8 @@ nvme_qpair_construct(nvme_qpair_t *qpair, uint32_t id,
 	ddi_dma_cookie_t  cookie;
 	uint_t  cookie_count;
 	int res;
-	const int qpair_mem_size = (sizeof(nvme_command_t) + sizeof(nvme_completion_t)) * num_entries;
+	const int qpair_mem_size = (sizeof(nvme_command_t) + sizeof(nvme_completion_t)) * num_entries + \
+			sizeof(sgl_entry_t) * NVME_SGL_LEN * num_trackers;
 
 	qpair->id = id;
 	qpair->vector = vector;
@@ -216,10 +217,11 @@ nvme_qpair_construct(nvme_qpair_t *qpair, uint32_t id,
 	ASSERT(cookie_count == 1);
 
 	qpair->cmd_bus_addr = cookie.dmac_laddress;
-
 	qpair->cpl_bus_addr = qpair->cmd_bus_addr + (qpair->num_entries * sizeof(nvme_command_t));
+	qpair->sgl_bus_addr = qpair->cpl_bus_addr + (qpair->num_entries * sizeof(nvme_completion_t));
 
 	qpair->cpl = (nvme_completion_t *)((char *)qpair->cmd + (qpair->num_entries * sizeof(nvme_command_t)));
+	qpair->sgl = (sgl_entry_t *)((char *)qpair->cpl + (qpair->num_entries * sizeof(nvme_completion_t)));
 
 	qpair->sq_tdbl_off = nvme_mmio_offsetof(doorbell[id].sq_tdbl);
 	qpair->cq_hdbl_off = nvme_mmio_offsetof(doorbell[id].cq_hdbl);
@@ -233,6 +235,9 @@ nvme_qpair_construct(nvme_qpair_t *qpair, uint32_t id,
 
 		t->qpair = qpair;
 		t->cid = i;
+		t->sgl = (sgl_entry_t *)((char *)qpair->sgl + (NVME_SGL_LEN * i * sizeof(sgl_entry_t)));
+		t->sgl_bus = qpair->sgl_bus_addr + (NVME_SGL_LEN * i * sizeof(sgl_entry_t));
+
 		TAILQ_INSERT_TAIL(&qpair->free_trackers, t, next);
 	}
 	qpair->act_tr = kmem_zalloc(sizeof(nvme_tracker_t *) *
@@ -318,7 +323,6 @@ nvme_qpair_submit_cmd(nvme_tracker_t *tr)
 	tr->cmd.cid = tr->cid;
 
 	cmd = &qpair->cmd[qpair->sq_tail];
-
 	/* Copy the command from the tracker to the submission queue. */
 	memcpy(cmd, &tr->cmd, sizeof(tr->cmd));
 

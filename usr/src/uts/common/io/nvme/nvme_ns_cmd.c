@@ -59,7 +59,7 @@ nvme_ns_start_io(nvme_namespace_t *ns, bd_xfer_t *xfer,
 	/* when MSI/MSI-X is enabled, we use one IO qpair per CPU */
 	if (ns->ctrlr->msix_enabled == B_TRUE)
 	{
-		if (CPU->cpu_id > (ns->ctrlr->num_io_queues - 1))
+		if (CPU->cpu_id >= ns->ctrlr->num_io_queues)
 			qindex = CPU->cpu_id % ns->ctrlr->num_io_queues;
 		else
 			qindex = CPU->cpu_id;
@@ -85,13 +85,15 @@ nvme_ns_start_io(nvme_namespace_t *ns, bd_xfer_t *xfer,
 	if (cmd_code != NVME_OPC_FLUSH) {
 
 		*(uint64_t *)&cmd->cdw10 = xfer->x_blkno;
-		cmd->cdw12 = (xfer->x_dmac.dmac_size / blk_size) - 1;
+		cmd->cdw12 = xfer->x_nblks - 1;
+		cmd->rsvd1 |= 1;
 
 		DTRACE_PROBE3(start_io, size_t, xfer->x_dmac.dmac_size,
 			int, xfer->x_ndmac, int, xfer->x_nblks);
 	}
 	ret = nvme_qpair_submit_request(tr, ASYNC);
 
+#if 0
 	if (xfer->x_flags & BD_XFER_POLL) {
 
 		int blks_done, total_blks_done = 0;
@@ -122,5 +124,6 @@ nvme_ns_start_io(nvme_namespace_t *ns, bd_xfer_t *xfer,
 		nvme_free_tracker(tr);
 		ret = 0;
 	}
+#endif
 	return ret;
 }

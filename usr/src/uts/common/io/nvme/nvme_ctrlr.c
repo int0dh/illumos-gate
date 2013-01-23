@@ -586,13 +586,16 @@ nvme_chatam_initialize(nvme_controller_t *nvme)
 	
 	reg1 = reg2 = reg3 = (uint64_t)(nvme->chatam_lbas * 512);
 
-	printf("using DDR timings\n");
+	printf("using flash timings\n");
 
 	chatam_mmio_write_8(nvme, 0x8000, reg1);
 	chatam_mmio_write_8(nvme, 0x8008, reg2);
 	chatam_mmio_write_8(nvme, 0x8010, reg3);
 
-	temp1 = temp2 = 0ULL;
+	temp1 = 0x00001b58000007d0ULL;
+	temp2 = 0x000000cb00000131ULL;
+
+//	temp1 = temp2 = 0ULL;
 
 	chatam_mmio_write_8(nvme, 0x8020, temp1);
 	temp3 = chatam_mmio_read_4(nvme, 0x8020);

@@ -36,7 +36,7 @@
 #define ASYNC 1 /* submit request and return immediatelly */
 
 /* hardware supports up to 128k */
-#define NVME_MAX_XFER_SIZE	(128 * 1024)	
+#define NVME_MAX_XFER_SIZE	(32 * 1024)	
 
 #define NVME_ADMIN_TRACKERS	(16)
 #define NVME_ADMIN_ENTRIES	(128)
@@ -86,7 +86,6 @@ typedef void (*nvme_cb_fn_t)(void *, const nvme_completion_t *, nvme_tracker_t *
 struct nvme_tracker {
 
 	TAILQ_ENTRY(nvme_tracker)	next;
-	boolean_t			is_last;
 	struct nvme_command		cmd;
 	struct nvme_qpair		*qpair;
 	kcondvar_t			cv;
@@ -99,6 +98,8 @@ struct nvme_tracker {
 	timeout_id_t			timeout;
 	uint16_t			cid;
 	int				ndmac_completed;
+	sgl_entry_t			*sgl;
+	uint64_t			sgl_bus;
 };
 
 struct nvme_qpair {
@@ -136,8 +137,11 @@ struct nvme_qpair {
 	ddi_dma_handle_t	dmah;
 
 	uint64_t		cmd_bus_addr;
-
 	uint64_t		cpl_bus_addr;
+
+	sgl_entry_t		*sgl;
+	uint64_t		sgl_bus_addr;
+
 	struct nvme_tracker	**act_tr;
 
 	struct nvme_tracker	*trackers;
@@ -335,6 +339,7 @@ int	nvme_ns_construct(nvme_namespace_t *ns, uint16_t id,
 			  nvme_controller_t *ctrlr);
 
 void	nvme_sysctl_initialize_ctrlr(nvme_controller_t *ctrlr);
+int	nvme_release_interrupts(nvme_controller_t *ctrlr);
 
 static __inline nvme_tracker_t*
 nvme_allocate_tracker(nvme_qpair_t *q, uint64_t payload, 
@@ -353,6 +358,7 @@ nvme_allocate_tracker(nvme_qpair_t *q, uint64_t payload,
 	mutex_exit(&q->free_trackers_mutex);
 
 	memset(&tr->cmd, 0, sizeof(struct nvme_command));
+	memset(tr->sgl, 0, sizeof(sgl_entry_t) * NVME_SGL_LEN);
 
 	tr->payload = payload;
 	tr->payload_size = payload_size;

@@ -192,6 +192,28 @@ struct nvme_registers
 	} doorbell[1] __packed;
 } __packed;
 
+/* 16 * 16 == 256 bytes per tracker */
+
+#define NVME_SGL_LEN 32
+
+#if 1
+typedef struct sgl_entry
+{
+	uint8_t  type;
+	uint64_t addr;
+	uint32_t len;
+	uint8_t  reserved[3];
+} __packed sgl_entry_t;
+#endif
+#if 0
+typedef struct sgl_entry_
+{
+	uint8_t  type;
+	uint8_t  reserved[3];
+	uint32_t len;
+	uint64_t addr;
+} __packed sgl_entry_t;
+#endif
 typedef struct nvme_command
 {
 	/* dword 0 */
